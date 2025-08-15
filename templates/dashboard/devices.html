@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Geräte</h1>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addDeviceModal">
+        <i class="fas fa-plus"></i> Neues Gerät
+    </button>
+</div>
+
+<div class="row">
+    {% for device in devices %}
+    <div class="col-md-4 mb-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">{{ device.name }}</h5>
+                <p class="card-text">
+                    <span class="badge bg-{{ 'success' if device.status.value == 'active' else 'warning' }}">
+                        {{ device.status.value }}
+                    </span>
+                </p>
+                <p>Typ: {{ device.type.value }}</p>
+                <p>Standort: {{ device.location or 'Nicht angegeben' }}</p>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="alert alert-info">
+            Keine Geräte vorhanden. Fügen Sie Ihr erstes Gerät hinzu!
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

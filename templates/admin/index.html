@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # FLASK APP - mit Hot-Reload für PyCharm
+  # ==========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev  # Development Dockerfile
+    container_name: automaten_app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"    # Flask App
+      - "5678:5678"    # Debug Port für PyCharm
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/automaten
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=dev-secret-key-change-in-production
+    volumes:
+      # Hot-Reload: Lokale Dateien in Container mounten
+      - ./app:/app/app:delegated
+      - ./config:/app/config:delegated
+      - ./templates:/app/templates:delegated
+      - ./static:/app/static:delegated
+      - ./run.py:/app/run.py:delegated
+      # Verhindere, dass lokale venv in Container gemountet wird
+      - /app/venv
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - automaten-network
+    command: python run.py  # Für Development, in Produktion: gunicorn
+    stdin_open: true  # Für Debugging
+    tty: true         # Für Debugging
+
+  # ==========================================================================
+  # POSTGRESQL DATABASE
+  # ==========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: automaten_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"  # Expose für PyCharm Database Tool
+    environment:
+      - POSTGRES_DB=automaten
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Optional: Init Script
+      # - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - automaten-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # REDIS CACHE
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: automaten_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"  # Expose für Redis GUI Tools
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - automaten-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # ADMINER - Database Management (Optional, sehr hilfreich!)
+  # ==========================================================================
+  adminer:
+    image: adminer:latest
+    container_name: automaten_adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+      - ADMINER_DESIGN=pepa-linha
+    depends_on:
+      - postgres
+    networks:
+      - automaten-network
+
+  # ==========================================================================
+  # REDIS COMMANDER - Redis GUI (Optional, sehr hilfreich!)
+  # ==========================================================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: automaten_redis_commander
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
+    networks:
+      - automaten-network
+
+  # ==========================================================================
+  # MAILHOG - Email Testing (Für Development)
+  # ==========================================================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: automaten_mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - automaten-network
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  automaten-network:
+    driver: bridge
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="row">
+    <div class="col-md-3">
+        <div class="card stat-card revenue">
+            <div class="stat-value">{{ "%.2f"|format(today_revenue) }} €</div>
+            <div class="stat-label">Heute</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card devices">
+            <div class="stat-value">{{ active_devices }}/{{ total_devices }}</div>
+            <div class="stat-label">Aktive Geräte</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Dashboard</h1>
+    <button class="btn btn-primary" onclick="location.reload()">
+        <i class="fas fa-sync-alt"></i> Aktualisieren
+    </button>
+</div>
+
+<!-- Statistik-Karten -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card revenue">
+            <div class="stat-value">{{ "%.2f"|format(today_revenue) }} €</div>
+            <div class="stat-label">Einnahmen Heute</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card profit">
+            <div class="stat-value">{{ "%.2f"|format(month_revenue) }} €</div>
+            <div class="stat-label">Einnahmen Monat</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card devices">
+            <div class="stat-value">{{ active_devices }}/{{ total_devices }}</div>
+            <div class="stat-label">Aktive Geräte</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card expense">
+            <div class="stat-value">{{ total_devices * 900 }} €</div>
+            <div class="stat-label">Investition</div>
+        </div>
+    </div>
+</div>
+
+<!-- Chart -->
+<div class="row mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5>Einnahmen Verlauf</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="revenueChart"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5>Geräte Status</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="deviceChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Letzte Einträge -->
+<div class="card">
+    <div class="card-header">
+        <h5>Letzte Einträge</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Datum</th>
+                        <th>Gerät</th>
+                        <th>Betrag</th>
+                        <th>Beschreibung</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in recent_entries %}
+                    <tr>
+                        <td>{{ entry.date }}</td>
+                        <td>{{ entry.device.name if entry.device else 'N/A' }}</td>
+                        <td>{{ "%.2f"|format(entry.amount) }} €</td>
+                        <td>{{ entry.description or '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="text-center">Keine Einträge vorhanden</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+// Revenue Chart
+const ctx1 = document.getElementById('revenueChart').getContext('2d');
+new Chart(ctx1, {
+    type: 'line',
+    data: {
+        labels: ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'],
+        datasets: [{
+            label: 'Einnahmen',
+            data: [65, 59, 80, 81, 56, 55, 40],
+            borderColor: 'rgb(75, 192, 192)',
+            tension: 0.1
+        }]
+    }
+});
+
+// Device Chart
+const ctx2 = document.getElementById('deviceChart').getContext('2d');
+new Chart(ctx2, {
+    type: 'doughnut',
+    data: {
+        labels: ['Aktiv', 'Wartung', 'Inaktiv'],
+        datasets: [{
+            data: [{{ active_devices }}, 0, {{ total_devices - active_devices }}],
+            backgroundColor: ['#27ae60', '#f39c12', '#e74c3c']
+        }]
+    }
+});
+</script>
+{% endblock %}
