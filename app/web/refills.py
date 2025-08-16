@@ -854,12 +854,23 @@ def add_refill():
         receipt_data = request.form.get('receipt_data')
         receipt_filename = request.form.get('receipt_filename')
 
+        # Eindeutige Rechnungsnummer generieren falls leer
+        invoice_number = request.form.get('invoice_number')
+        if not invoice_number or invoice_number.strip() == '':
+            from datetime import datetime
+            import random
+            import string
+            # Format: REF-YYYYMMDD-XXXXX (z.B. REF-20250816-A3B7K)
+            date_str = datetime.now().strftime('%Y%m%d')
+            random_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+            invoice_number = f"REF-{date_str}-{random_code}"
+
         # Refill erstellen
         refill = Refill(
             date=datetime.strptime(request.form.get('date'), '%Y-%m-%d').date(),
             supplier_id=request.form.get('supplier_id') or None,
             device_id=request.form.get('device_id') or None,
-            invoice_number=request.form.get('invoice_number'),
+            invoice_number=invoice_number,
             delivery_note=request.form.get('delivery_note'),
             shipping_cost=Decimal(request.form.get('shipping_cost', 0)),
             deposit_amount=deposit_amount,

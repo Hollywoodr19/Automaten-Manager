@@ -211,8 +211,9 @@ class RefillItem(db.Model):
     total_price = db.Column(db.Numeric(10, 2), nullable=False)
 
     # NEUE FELDER für Zeilen-Rabatt
-    line_discount = db.Column(db.Numeric(10, 2), default=0)
-    line_discount_reason = db.Column(db.String(100))
+    line_discount = db.Column('discount_amount', db.Numeric(10, 2), default=0)
+    line_discount_reason = db.Column('discount_reason', db.String(100))
+    discount_percent = db.Column(db.Numeric(5, 2), default=0)
 
     # Optional
     batch_number = db.Column(db.String(50))
@@ -223,7 +224,7 @@ class RefillItem(db.Model):
     def calculate_total(self):
         """Berechnet Gesamtpreis mit Rabatt"""
         gross = self.quantity * self.unit_price
-        self.total_price = gross - (self.line_discount or 0)
+        self.total_price = gross - (self.discount_amount or 0)
 
 
 class InventoryMovement(db.Model):

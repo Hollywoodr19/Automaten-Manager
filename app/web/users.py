@@ -1,18 +1,23 @@
 # app/web/users.py
 """
-Benutzerverwaltung
+Vollständige Benutzerverwaltung mit allen Features
+- Basis-Features: User CRUD, Profile, Passwort-Management, 2FA
+- Erweiterte Features: Suche, Filter, Bulk-Aktionen, Import/Export, Details
 """
 
-from flask import Blueprint, render_template_string, redirect, url_for, flash, request, jsonify
+from flask import Blueprint, render_template_string, redirect, url_for, flash, request, jsonify, send_file
 from flask_login import login_required, current_user
 from werkzeug.security import generate_password_hash
 from datetime import datetime, timedelta
 import secrets
 import string
+import csv
+import io
 from app import db
 from app.models import User, LoginLog, AuditLog, AuditAction
 from app.web.navigation import render_with_base_new as render_with_base
 from functools import wraps
+from sqlalchemy import or_, and_
 
 users_bp = Blueprint('users', __name__, url_prefix='/users')
 
@@ -48,7 +53,7 @@ def log_audit(action_type, details, entity_type='User', entity_id=None):
         elif 'IMPORT' in action_type:
             audit_action = AuditAction.IMPORT
         else:
-            # Alles andere ist UPDATE (inkl. USER_UPDATED, PASSWORD_RESET, etc.)
+            # Alles andere ist UPDATE
             audit_action = AuditAction.UPDATE
 
         audit = AuditLog(
@@ -56,7 +61,7 @@ def log_audit(action_type, details, entity_type='User', entity_id=None):
             action=audit_action,
             entity_type=entity_type,
             entity_id=entity_id,
-            details={'message': details, 'original_action': action_type},  # Store details as JSON
+            details={'message': details, 'original_action': action_type},
             ip_address=request.remote_addr,
             user_agent=request.user_agent.string[:200] if request.user_agent else None
         )
@@ -64,7 +69,6 @@ def log_audit(action_type, details, entity_type='User', entity_id=None):
         db.session.commit()
     except Exception as e:
         print(f"Error logging audit: {e}")
-        # Don't fail the main operation if audit logging fails
         db.session.rollback()
         pass
 
@@ -72,42 +76,98 @@ def log_audit(action_type, details, entity_type='User', entity_id=None):
 @users_bp.route('/')
 @login_required
 def index():
-    """Benutzerliste anzeigen"""
-    # Nur Admins sehen alle User, normale User werden zu ihrem Profil weitergeleitet
+    """Benutzerliste mit Suche, Filter und Bulk-Aktionen"""
     if not current_user.is_admin:
         return redirect(url_for('users.profile'))
 
-    users = User.query.order_by(User.created_at.desc()).all()
+    # Such- und Filter-Parameter
+    search_query = request.args.get('search', '').strip()
+    filter_status = request.args.get('status', 'all')
+    filter_role = request.args.get('role', 'all')
+    sort_by = request.args.get('sort', 'created_desc')
 
-    # Statistiken berechnen
-    total_users = len(users)
-    active_users = len([u for u in users if u.is_active])
-    admin_users = len([u for u in users if u.is_admin])
-    verified_users = len([u for u in users if u.is_verified])
+    # Query aufbauen
+    query = User.query
+
+    # Suche
+    if search_query:
+        query = query.filter(
+            or_(
+                User.username.ilike(f'%{search_query}%'),
+                User.email.ilike(f'%{search_query}%'),
+                User.first_name.ilike(f'%{search_query}%'),
+                User.last_name.ilike(f'%{search_query}%')
+            )
+        )
+
+    # Filter: Status
+    if filter_status == 'active':
+        query = query.filter(User.is_active == True)
+    elif filter_status == 'inactive':
+        query = query.filter(User.is_active == False)
+    elif filter_status == 'verified':
+        query = query.filter(User.is_verified == True)
+    elif filter_status == 'locked':
+        query = query.filter(User.locked_until > datetime.utcnow())
+
+    # Filter: Rolle
+    if filter_role == 'admin':
+        query = query.filter(User.is_admin == True)
+    elif filter_role == 'user':
+        query = query.filter(User.is_admin == False)
+
+    # Sortierung
+    if sort_by == 'name_asc':
+        query = query.order_by(User.username.asc())
+    elif sort_by == 'name_desc':
+        query = query.order_by(User.username.desc())
+    elif sort_by == 'created_asc':
+        query = query.order_by(User.created_at.asc())
+    elif sort_by == 'created_desc':
+        query = query.order_by(User.created_at.desc())
+    elif sort_by == 'last_login':
+        query = query.order_by(User.last_login.desc().nullslast())
+
+    users = query.all()
+
+    # Statistiken
+    total_users = User.query.count()
+    active_users = User.query.filter_by(is_active=True).count()
+    admin_users = User.query.filter_by(is_admin=True).count()
+    verified_users = User.query.filter_by(is_verified=True).count()
+    locked_users = User.query.filter(User.locked_until > datetime.utcnow()).count() if User.query.first() else 0
 
     content = f'''
     <div class="container-fluid">
-        <!-- Header mit Statistiken -->
+        <!-- Header -->
         <div class="row mb-4">
             <div class="col-12">
                 <div class="d-flex justify-content-between align-items-center mb-4">
                     <h2><i class="bi bi-people-fill"></i> Benutzerverwaltung</h2>
-                    <button class="btn btn-primary" onclick="showAddUserModal()">
-                        <i class="bi bi-person-plus-fill"></i> Benutzer hinzufügen
-                    </button>
+                    <div class="btn-group">
+                        <button class="btn btn-primary" onclick="showAddUserModal()">
+                            <i class="bi bi-person-plus-fill"></i> Neuer Benutzer
+                        </button>
+                        <button class="btn btn-success" onclick="showImportModal()">
+                            <i class="bi bi-upload"></i> Import
+                        </button>
+                        <button class="btn btn-info" onclick="exportUsers()">
+                            <i class="bi bi-download"></i> Export
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Statistik-Karten -->
                 <div class="row g-3 mb-4">
-                    <div class="col-md-3">
+                    <div class="col">
                         <div class="card border-0 shadow-sm">
                             <div class="card-body text-center">
                                 <h3 class="text-primary mb-0">{total_users}</h3>
-                                <small class="text-muted">Benutzer gesamt</small>
+                                <small class="text-muted">Gesamt</small>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col">
                         <div class="card border-0 shadow-sm">
                             <div class="card-body text-center">
                                 <h3 class="text-success mb-0">{active_users}</h3>
@@ -115,15 +175,15 @@ def index():
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col">
                         <div class="card border-0 shadow-sm">
                             <div class="card-body text-center">
                                 <h3 class="text-warning mb-0">{admin_users}</h3>
-                                <small class="text-muted">Administratoren</small>
+                                <small class="text-muted">Admins</small>
                             </div>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col">
                         <div class="card border-0 shadow-sm">
                             <div class="card-body text-center">
                                 <h3 class="text-info mb-0">{verified_users}</h3>
@@ -131,11 +191,107 @@ def index():
                             </div>
                         </div>
                     </div>
+                    <div class="col">
+                        <div class="card border-0 shadow-sm">
+                            <div class="card-body text-center">
+                                <h3 class="text-danger mb-0">{locked_users}</h3>
+                                <small class="text-muted">Gesperrt</small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- Benutzer-Karten -->
+                <!-- Such- und Filter-Leiste -->
+                <div class="card shadow-sm mb-4">
+                    <div class="card-body">
+                        <form method="get" action="/users" class="row g-3 align-items-end">
+                            <div class="col-md-4">
+                                <label class="form-label"><i class="bi bi-search"></i> Suche</label>
+                                <input type="text" class="form-control" name="search" 
+                                       placeholder="Name, E-Mail..." value="{search_query}"
+                                       autocomplete="off">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">Status</label>
+                                <select class="form-select" name="status">
+                                    <option value="all" {'selected' if filter_status == 'all' else ''}>Alle</option>
+                                    <option value="active" {'selected' if filter_status == 'active' else ''}>Aktiv</option>
+                                    <option value="inactive" {'selected' if filter_status == 'inactive' else ''}>Inaktiv</option>
+                                    <option value="verified" {'selected' if filter_status == 'verified' else ''}>Verifiziert</option>
+                                    <option value="locked" {'selected' if filter_status == 'locked' else ''}>Gesperrt</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">Rolle</label>
+                                <select class="form-select" name="role">
+                                    <option value="all" {'selected' if filter_role == 'all' else ''}>Alle</option>
+                                    <option value="admin" {'selected' if filter_role == 'admin' else ''}>Admins</option>
+                                    <option value="user" {'selected' if filter_role == 'user' else ''}>Benutzer</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">Sortierung</label>
+                                <select class="form-select" name="sort">
+                                    <option value="created_desc" {'selected' if sort_by == 'created_desc' else ''}>Neueste zuerst</option>
+                                    <option value="created_asc" {'selected' if sort_by == 'created_asc' else ''}>Älteste zuerst</option>
+                                    <option value="name_asc" {'selected' if sort_by == 'name_asc' else ''}>Name A-Z</option>
+                                    <option value="name_desc" {'selected' if sort_by == 'name_desc' else ''}>Name Z-A</option>
+                                    <option value="last_login" {'selected' if sort_by == 'last_login' else ''}>Letzter Login</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-primary w-100">
+                                    <i class="bi bi-funnel"></i> Anwenden
+                                </button>
+                            </div>
+                        </form>
+                        {f'<div class="mt-2"><small class="text-muted">{len(users)} von {total_users} Benutzern angezeigt</small></div>' if search_query or filter_status != 'all' or filter_role != 'all' else ''}
+                    </div>
+                </div>
+
+                <!-- Bulk-Aktionen Leiste -->
+                <div class="card shadow-sm mb-3" id="bulkActionsBar" style="display: none;">
+                    <div class="card-body py-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <span class="fw-bold"><span id="selectedCount">0</span> ausgewählt</span>
+                                <button class="btn btn-sm btn-link" onclick="selectAll()">Alle auswählen</button>
+                                <button class="btn btn-sm btn-link" onclick="deselectAll()">Auswahl aufheben</button>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-sm btn-success" onclick="bulkActivate()">
+                                    <i class="bi bi-check-circle"></i> Aktivieren
+                                </button>
+                                <button class="btn btn-sm btn-warning" onclick="bulkDeactivate()">
+                                    <i class="bi bi-x-circle"></i> Deaktivieren
+                                </button>
+                                <button class="btn btn-sm btn-info" onclick="bulkResetPasswords()">
+                                    <i class="bi bi-key"></i> Passwörter zurücksetzen
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="bulkDelete()">
+                                    <i class="bi bi-trash"></i> Löschen
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Benutzer-Karten mit Checkboxen -->
                 <div class="row g-3">
     '''
+
+    if not users:
+        content += '''
+            <div class="col-12">
+                <div class="alert alert-info text-center">
+                    <i class="bi bi-info-circle fs-1"></i>
+                    <p class="mt-2">Keine Benutzer gefunden.</p>
+                    <button class="btn btn-primary" onclick="window.location.href='/users'">
+                        <i class="bi bi-arrow-counterclockwise"></i> Filter zurücksetzen
+                    </button>
+                </div>
+            </div>
+        '''
 
     for user in users:
         # Avatar mit Initialen
@@ -144,7 +300,6 @@ def index():
         # Letzte Aktivität
         last_login = LoginLog.query.filter_by(user_id=user.id, success=True).order_by(LoginLog.timestamp.desc()).first()
         if last_login:
-            # Zeit-Differenz berechnen
             time_diff = datetime.utcnow() - last_login.timestamp
             if time_diff.days == 0:
                 if time_diff.seconds < 3600:
@@ -170,38 +325,48 @@ def index():
         if user.is_active:
             badges.append('<span class="badge bg-info">Aktiv</span>')
         else:
-            badges.append('<span class="badge bg-danger">Gesperrt</span>')
+            badges.append('<span class="badge bg-danger">Inaktiv</span>')
+        if user.is_locked():
+            badges.append('<span class="badge bg-dark">Gesperrt</span>')
         if user.two_factor_enabled:
             badges.append('<span class="badge bg-purple">2FA</span>')
 
         # Actions dropdown
         actions = f'''
             <div class="dropdown">
-            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                <i class="bi bi-three-dots-vertical"></i>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">  <!-- NEU: dropdown-menu-end hinzugefügt -->
-                <li><a class="dropdown-item" href="#" onclick="editUser({user.id})">
-                    <i class="bi bi-pencil"></i> Bearbeiten</a></li>
-                <li><a class="dropdown-item" href="#" onclick="resetPassword({user.id})">
-                    <i class="bi bi-key"></i> Passwort zurücksetzen</a></li>
-                <li><a class="dropdown-item" href="/users/activity/{user.id}">
-                    <i class="bi bi-clock-history"></i> Aktivitäten</a></li>
-                <li><hr class="dropdown-divider"></li>
+                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="#" onclick="editUser({user.id})">
+                        <i class="bi bi-pencil"></i> Bearbeiten</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="resetPassword({user.id})">
+                        <i class="bi bi-key"></i> Passwort zurücksetzen</a></li>
+                    <li><a class="dropdown-item" href="/users/activity/{user.id}">
+                        <i class="bi bi-clock-history"></i> Aktivitäten</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="showUserDetails({user.id})">
+                        <i class="bi bi-info-circle"></i> Details</a></li>
+                    <li><hr class="dropdown-divider"></li>
         '''
 
         if user.is_active:
             actions += f'''
                     <li><a class="dropdown-item text-warning" href="#" onclick="toggleUserStatus({user.id}, false)">
-                        <i class="bi bi-lock"></i> Sperren</a></li>
+                        <i class="bi bi-lock"></i> Deaktivieren</a></li>
             '''
         else:
             actions += f'''
                     <li><a class="dropdown-item text-success" href="#" onclick="toggleUserStatus({user.id}, true)">
-                        <i class="bi bi-unlock"></i> Entsperren</a></li>
+                        <i class="bi bi-unlock"></i> Aktivieren</a></li>
             '''
 
-        if user.id != current_user.id:  # Kann sich nicht selbst löschen
+        if user.is_locked():
+            actions += f'''
+                    <li><a class="dropdown-item text-info" href="#" onclick="unlockUser({user.id})">
+                        <i class="bi bi-unlock-fill"></i> Entsperren</a></li>
+            '''
+
+        if user.id != current_user.id:
             actions += f'''
                     <li><a class="dropdown-item text-danger" href="#" onclick="deleteUser({user.id})">
                         <i class="bi bi-trash"></i> Löschen</a></li>
@@ -212,11 +377,18 @@ def index():
             </div>
         '''
 
+        # Checkbox disabled für eigenen User
+        checkbox_disabled = 'disabled' if user.id == current_user.id else ''
+
         content += f'''
             <div class="col-md-6 col-lg-4">
-                <div class="card shadow-sm h-100">
+                <div class="card shadow-sm h-100 user-card" data-user-id="{user.id}">
                     <div class="card-body">
                         <div class="d-flex align-items-start">
+                            <div class="form-check me-2">
+                                <input class="form-check-input user-checkbox" type="checkbox" 
+                                       value="{user.id}" id="user-{user.id}" {checkbox_disabled}>
+                            </div>
                             <div class="avatar-circle me-3" style="background: {"#6f42c1" if user.is_admin else "#0d6efd"};">
                                 {initials}
                             </div>
@@ -250,7 +422,57 @@ def index():
         </div>
     </div>
 
-    <!-- Modals -->
+    <!-- Import Modal -->
+    <div class="modal fade" id="importModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Benutzer importieren</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> CSV-Format:
+                        <code>username,email,first_name,last_name,is_admin</code>
+                    </div>
+                    <form id="importForm" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label class="form-label">CSV-Datei</label>
+                            <input type="file" class="form-control" name="file" accept=".csv" required>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="sendWelcomeEmails">
+                            <label class="form-check-label" for="sendWelcomeEmails">
+                                Willkommens-E-Mails senden (noch nicht implementiert)
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                    <button type="button" class="btn btn-success" onclick="importUsers()">
+                        <i class="bi bi-upload"></i> Importieren
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Details Modal -->
+    <div class="modal fade" id="userDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Benutzer-Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="userDetailsContent">
+                    <!-- Wird dynamisch gefüllt -->
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Add User Modal -->
     <div class="modal fade" id="addUserModal" tabindex="-1">
         <div class="modal-dialog">
@@ -372,16 +594,299 @@ def index():
             background-color: #6f42c1;
         }
         .card {
-            transition: transform 0.2s;
+            transition: all 0.2s;
         }
         .card:hover {
             transform: translateY(-2px);
+        }
+        .card.selected {
+            border: 2px solid #0d6efd;
+            background-color: #f0f8ff;
+        }
+        .user-checkbox {
+            cursor: pointer;
+            width: 18px;
+            height: 18px;
+        }
+        .user-checkbox:disabled {
+            cursor: not-allowed;
+        }
+        #bulkActionsBar {
+            position: sticky;
+            top: 60px;
+            z-index: 100;
         }
     </style>
     '''
 
     extra_scripts = '''
     <script>
+        let selectedUsers = new Set();
+
+        // Checkbox Handler
+        document.addEventListener('DOMContentLoaded', function() {
+            // Checkbox Event Listener
+            document.querySelectorAll('.user-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    const userId = parseInt(this.value);
+                    const card = this.closest('.user-card');
+
+                    if (this.checked) {
+                        selectedUsers.add(userId);
+                        card.classList.add('selected');
+                    } else {
+                        selectedUsers.delete(userId);
+                        card.classList.remove('selected');
+                    }
+
+                    updateBulkActionsBar();
+                });
+            });
+
+            // Enter-Taste für Suche
+            const searchInput = document.querySelector('input[name="search"]');
+            if (searchInput) {
+                searchInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        this.form.submit();
+                    }
+                });
+            }
+        });
+
+        function updateBulkActionsBar() {
+            const bar = document.getElementById('bulkActionsBar');
+            const count = document.getElementById('selectedCount');
+
+            if (selectedUsers.size > 0) {
+                bar.style.display = 'block';
+                count.textContent = selectedUsers.size;
+            } else {
+                bar.style.display = 'none';
+            }
+        }
+
+        function selectAll() {
+            document.querySelectorAll('.user-checkbox:not(:disabled)').forEach(checkbox => {
+                checkbox.checked = true;
+                const userId = parseInt(checkbox.value);
+                selectedUsers.add(userId);
+                checkbox.closest('.user-card').classList.add('selected');
+            });
+            updateBulkActionsBar();
+        }
+
+        function deselectAll() {
+            document.querySelectorAll('.user-checkbox').forEach(checkbox => {
+                checkbox.checked = false;
+                checkbox.closest('.user-card').classList.remove('selected');
+            });
+            selectedUsers.clear();
+            updateBulkActionsBar();
+        }
+
+        // Bulk Actions
+        function bulkActivate() {
+            if (confirm(`${selectedUsers.size} Benutzer aktivieren?`)) {
+                fetch('/users/bulk-action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'activate',
+                        user_ids: Array.from(selectedUsers)
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showAlert('Benutzer erfolgreich aktiviert!', 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        showAlert('Fehler: ' + data.message, 'danger');
+                    }
+                });
+            }
+        }
+
+        function bulkDeactivate() {
+            if (confirm(`${selectedUsers.size} Benutzer deaktivieren?`)) {
+                fetch('/users/bulk-action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'deactivate',
+                        user_ids: Array.from(selectedUsers)
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showAlert('Benutzer erfolgreich deaktiviert!', 'warning');
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        showAlert('Fehler: ' + data.message, 'danger');
+                    }
+                });
+            }
+        }
+
+        function bulkResetPasswords() {
+            if (confirm(`Passwörter für ${selectedUsers.size} Benutzer zurücksetzen?`)) {
+                fetch('/users/bulk-action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'reset_passwords',
+                        user_ids: Array.from(selectedUsers)
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Zeige neue Passwörter
+                        let message = 'Neue Passwörter:\\n\\n';
+                        for (const [username, password] of Object.entries(data.passwords)) {
+                            message += `${username}: ${password}\\n`;
+                        }
+                        alert(message);
+                        location.reload();
+                    } else {
+                        showAlert('Fehler: ' + data.message, 'danger');
+                    }
+                });
+            }
+        }
+
+        function bulkDelete() {
+            if (confirm(`WIRKLICH ${selectedUsers.size} Benutzer LÖSCHEN? Diese Aktion kann nicht rückgängig gemacht werden!`)) {
+                if (confirm('Sind Sie ABSOLUT SICHER?')) {
+                    fetch('/users/bulk-action', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            action: 'delete',
+                            user_ids: Array.from(selectedUsers)
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            showAlert('Benutzer erfolgreich gelöscht!', 'success');
+                            setTimeout(() => location.reload(), 1500);
+                        } else {
+                            showAlert('Fehler: ' + data.message, 'danger');
+                        }
+                    });
+                }
+            }
+        }
+
+        // Import/Export
+        function showImportModal() {
+            new bootstrap.Modal(document.getElementById('importModal')).show();
+        }
+
+        function importUsers() {
+            const form = document.getElementById('importForm');
+            const formData = new FormData(form);
+
+            fetch('/users/import', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert(`${data.imported} Benutzer erfolgreich importiert!`, 'success');
+                    setTimeout(() => location.reload(), 2000);
+                } else {
+                    showAlert('Fehler: ' + data.message, 'danger');
+                }
+            });
+        }
+
+        function exportUsers() {
+            window.location.href = '/users/export';
+        }
+
+        // User Details
+        function showUserDetails(userId) {
+            fetch(`/users/details/${userId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const content = document.getElementById('userDetailsContent');
+                    content.innerHTML = `
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Basis-Informationen</h6>
+                                <table class="table table-sm">
+                                    <tr><td class="fw-bold">Username:</td><td>${data.username}</td></tr>
+                                    <tr><td class="fw-bold">E-Mail:</td><td>${data.email}</td></tr>
+                                    <tr><td class="fw-bold">Name:</td><td>${data.full_name || '-'}</td></tr>
+                                    <tr><td class="fw-bold">Rolle:</td><td>${data.is_admin ? '<span class="badge bg-warning">Administrator</span>' : '<span class="badge bg-secondary">Benutzer</span>'}</td></tr>
+                                    <tr><td class="fw-bold">Status:</td><td>${data.is_active ? '<span class="badge bg-success">Aktiv</span>' : '<span class="badge bg-danger">Inaktiv</span>'}</td></tr>
+                                </table>
+                            </div>
+                            <div class="col-md-6">
+                                <h6 class="text-primary">Sicherheit & Aktivität</h6>
+                                <table class="table table-sm">
+                                    <tr><td class="fw-bold">2FA:</td><td>${data.two_factor_enabled ? '<span class="badge bg-success">Aktiviert</span>' : '<span class="badge bg-secondary">Deaktiviert</span>'}</td></tr>
+                                    <tr><td class="fw-bold">Verifiziert:</td><td>${data.is_verified ? '<span class="badge bg-success">Ja</span>' : '<span class="badge bg-warning">Nein</span>'}</td></tr>
+                                    <tr><td class="fw-bold">Gesperrt:</td><td>${data.is_locked ? '<span class="badge bg-danger">Ja bis ' + data.locked_until + '</span>' : '<span class="badge bg-success">Nein</span>'}</td></tr>
+                                    <tr><td class="fw-bold">Letzter Login:</td><td>${data.last_login || 'Nie'}</td></tr>
+                                    <tr><td class="fw-bold">Login-Anzahl:</td><td><span class="badge bg-info">${data.login_count}</span></td></tr>
+                                    <tr><td class="fw-bold">Fehlversuche:</td><td><span class="badge bg-warning">${data.failed_login_count}</span></td></tr>
+                                    <tr><td class="fw-bold">Aktivitäten:</td><td><span class="badge bg-primary">${data.activity_count}</span></td></tr>
+                                    <tr><td class="fw-bold">Erstellt:</td><td>${data.created_at}</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="mt-3 text-center">
+                            <a href="/users/activity/${data.id}" class="btn btn-sm btn-primary">
+                                <i class="bi bi-clock-history"></i> Aktivitäten anzeigen
+                            </a>
+                        </div>
+                    `;
+                    new bootstrap.Modal(document.getElementById('userDetailsModal')).show();
+                });
+        }
+
+        // Unlock User
+        function unlockUser(userId) {
+            if (confirm('Benutzer entsperren?')) {
+                fetch(`/users/unlock/${userId}`, {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        showAlert('Benutzer erfolgreich entsperrt!', 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        showAlert('Fehler: ' + data.message, 'danger');
+                    }
+                });
+            }
+        }
+
+        // Alert Helper
+        function showAlert(message, type) {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+            alertDiv.style.zIndex = '9999';
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            document.body.appendChild(alertDiv);
+
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+
+        // Original Functions
         function showAddUserModal() {
             generatePassword();
             new bootstrap.Modal(document.getElementById('addUserModal')).show();
@@ -400,7 +905,6 @@ def index():
             const form = document.getElementById('addUserForm');
             const formData = new FormData(form);
 
-            // Wenn kein Passwort, generiere eins
             if (!formData.get('password')) {
                 generatePassword();
                 formData.set('password', document.getElementById('newPassword').value);
@@ -413,9 +917,10 @@ def index():
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    location.reload();
+                    showAlert('Benutzer erfolgreich erstellt!', 'success');
+                    setTimeout(() => location.reload(), 1500);
                 } else {
-                    alert('Fehler: ' + data.message);
+                    showAlert('Fehler: ' + data.message, 'danger');
                 }
             });
         }
@@ -447,9 +952,10 @@ def index():
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    location.reload();
+                    showAlert('Benutzer erfolgreich aktualisiert!', 'success');
+                    setTimeout(() => location.reload(), 1500);
                 } else {
-                    alert('Fehler: ' + data.message);
+                    showAlert('Fehler: ' + data.message, 'danger');
                 }
             });
         }
@@ -464,14 +970,14 @@ def index():
                     if (data.success) {
                         alert('Neues Passwort: ' + data.password + '\\n\\nBitte notieren!');
                     } else {
-                        alert('Fehler: ' + data.message);
+                        showAlert('Fehler: ' + data.message, 'danger');
                     }
                 });
             }
         }
 
         function toggleUserStatus(userId, activate) {
-            const action = activate ? 'entsperren' : 'sperren';
+            const action = activate ? 'aktivieren' : 'deaktivieren';
             if (confirm(`Benutzer wirklich ${action}?`)) {
                 fetch(`/users/toggle-status/${userId}`, {
                     method: 'POST',
@@ -481,9 +987,10 @@ def index():
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        location.reload();
+                        showAlert(`Benutzer erfolgreich ${activate ? 'aktiviert' : 'deaktiviert'}!`, 'success');
+                        setTimeout(() => location.reload(), 1500);
                     } else {
-                        alert('Fehler: ' + data.message);
+                        showAlert('Fehler: ' + data.message, 'danger');
                     }
                 });
             }
@@ -497,9 +1004,10 @@ def index():
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        location.reload();
+                        showAlert('Benutzer erfolgreich gelöscht!', 'success');
+                        setTimeout(() => location.reload(), 1500);
                     } else {
-                        alert('Fehler: ' + data.message);
+                        showAlert('Fehler: ' + data.message, 'danger');
                     }
                 });
             }
@@ -827,7 +1335,8 @@ def profile():
     )
 
 
-# Backend-Routes für User-Management
+# ============= BACKEND ROUTES FÜR BASIS-FEATURES =============
+
 @users_bp.route('/add', methods=['POST'])
 @admin_required
 def add_user():
@@ -1049,8 +1558,6 @@ def change_password():
         return jsonify({'success': False, 'message': str(e)})
 
 
-# Ersetzen Sie in Ihrer users.py die user_activity Funktion mit dieser korrigierten Version:
-
 @users_bp.route('/activity/<int:user_id>')
 @admin_required
 def user_activity(user_id):
@@ -1059,7 +1566,6 @@ def user_activity(user_id):
 
     # Hole alle Aktivitäten
     logins = LoginLog.query.filter_by(user_id=user_id).order_by(LoginLog.timestamp.desc()).limit(50).all()
-    # WICHTIG: AuditLog hat 'created_at' statt 'timestamp'!
     audits = AuditLog.query.filter_by(user_id=user_id).order_by(AuditLog.created_at.desc()).limit(50).all()
 
     content = f'''
@@ -1193,3 +1699,334 @@ def toggle_2fa():
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'message': str(e)})
+
+
+# ============= ERWEITERTE BACKEND ROUTES FÜR NEUE FEATURES =============
+
+@users_bp.route('/bulk-action', methods=['POST'])
+@admin_required
+def bulk_action():
+    """Bulk-Aktionen für mehrere Benutzer"""
+    try:
+        action = request.json.get('action')
+        user_ids = request.json.get('user_ids', [])
+
+        if not user_ids:
+            return jsonify({'success': False, 'message': 'Keine Benutzer ausgewählt'})
+
+        # Eigenen User aus der Liste entfernen
+        if current_user.id in user_ids:
+            user_ids.remove(current_user.id)
+
+        if action == 'activate':
+            User.query.filter(User.id.in_(user_ids)).update({'is_active': True})
+            db.session.commit()
+            log_audit('BULK_ACTIVATE', f'{len(user_ids)} users activated')
+            return jsonify({'success': True})
+
+        elif action == 'deactivate':
+            User.query.filter(User.id.in_(user_ids)).update({'is_active': False})
+            db.session.commit()
+            log_audit('BULK_DEACTIVATE', f'{len(user_ids)} users deactivated')
+            return jsonify({'success': True})
+
+        elif action == 'reset_passwords':
+            passwords = {}
+            users = User.query.filter(User.id.in_(user_ids)).all()
+            for user in users:
+                new_password = ''.join(
+                    secrets.choice(string.ascii_letters + string.digits + '!@#$%') for _ in range(12))
+                user.set_password(new_password)
+                passwords[user.username] = new_password
+            db.session.commit()
+            log_audit('BULK_PASSWORD_RESET', f'{len(user_ids)} passwords reset')
+            return jsonify({'success': True, 'passwords': passwords})
+
+        elif action == 'delete':
+            # Prüfe ob Admin gelöscht werden soll
+            admin_users = User.query.filter(User.id.in_(user_ids), User.is_admin == True).count()
+            total_admins = User.query.filter_by(is_admin=True).count()
+
+            if admin_users >= total_admins:
+                return jsonify({'success': False, 'message': 'Mindestens ein Administrator muss bleiben'})
+
+            User.query.filter(User.id.in_(user_ids)).delete()
+            db.session.commit()
+            log_audit('BULK_DELETE', f'{len(user_ids)} users deleted')
+            return jsonify({'success': True})
+
+        else:
+            return jsonify({'success': False, 'message': 'Unbekannte Aktion'})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@users_bp.route('/export')
+@admin_required
+def export_users():
+    """Benutzer als CSV exportieren"""
+    try:
+        users = User.query.all()
+
+        # CSV erstellen
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header
+        writer.writerow(
+            ['Username', 'Email', 'Vorname', 'Nachname', 'Admin', 'Aktiv', 'Verifiziert', '2FA', 'Erstellt am',
+             'Letzter Login'])
+
+        # Daten
+        for user in users:
+            writer.writerow([
+                user.username,
+                user.email,
+                user.first_name or '',
+                user.last_name or '',
+                'Ja' if user.is_admin else 'Nein',
+                'Ja' if user.is_active else 'Nein',
+                'Ja' if user.is_verified else 'Nein',
+                'Ja' if user.two_factor_enabled else 'Nein',
+                user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else '',
+                user.last_login.strftime('%d.%m.%Y %H:%M') if user.last_login else 'Nie'
+            ])
+
+        # Als Datei senden
+        output.seek(0)
+        output_bytes = io.BytesIO()
+        output_bytes.write(output.getvalue().encode('utf-8-sig'))  # UTF-8 BOM für Excel
+        output_bytes.seek(0)
+
+        log_audit('USER_EXPORT', f'Exported {len(users)} users')
+
+        return send_file(
+            output_bytes,
+            mimetype='text/csv',
+            as_attachment=True,
+            download_name=f'users_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        )
+
+    except Exception as e:
+        flash(f'Fehler beim Export: {str(e)}', 'danger')
+        return redirect(url_for('users.index'))
+
+
+@users_bp.route('/import', methods=['POST'])
+@admin_required
+def import_users():
+    """Benutzer aus CSV importieren"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'message': 'Keine Datei hochgeladen'})
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'Keine Datei ausgewählt'})
+
+        if not file.filename.endswith('.csv'):
+            return jsonify({'success': False, 'message': 'Nur CSV-Dateien erlaubt'})
+
+        # CSV lesen
+        stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
+        csv_reader = csv.DictReader(stream)
+
+        imported = 0
+        errors = []
+
+        for row in csv_reader:
+            try:
+                # Prüfe ob User existiert
+                username = row.get('username', '').strip()
+                email = row.get('email', '').strip()
+
+                if not username or not email:
+                    errors.append(f'Zeile {csv_reader.line_num}: Username oder Email fehlt')
+                    continue
+
+                if User.query.filter_by(username=username).first():
+                    errors.append(f'Username {username} existiert bereits')
+                    continue
+
+                if User.query.filter_by(email=email).first():
+                    errors.append(f'Email {email} existiert bereits')
+                    continue
+
+                # User erstellen
+                user = User(
+                    username=username,
+                    email=email,
+                    first_name=row.get('first_name', '').strip(),
+                    last_name=row.get('last_name', '').strip(),
+                    is_admin=row.get('is_admin', '').lower() in ['true', '1', 'ja', 'yes'],
+                    is_active=True,
+                    is_verified=False
+                )
+
+                # Passwort generieren
+                password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+                user.set_password(password)
+
+                db.session.add(user)
+                imported += 1
+
+            except Exception as e:
+                errors.append(f'Zeile {csv_reader.line_num}: {str(e)}')
+
+        db.session.commit()
+        log_audit('USER_IMPORT', f'Imported {imported} users')
+
+        if errors:
+            return jsonify({
+                'success': True,
+                'imported': imported,
+                'message': f'{imported} Benutzer importiert. Fehler: {", ".join(errors[:5])}'
+            })
+
+        return jsonify({'success': True, 'imported': imported})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@users_bp.route('/details/<int:user_id>')
+@admin_required
+def user_details(user_id):
+    """Detaillierte Benutzerinformationen"""
+    try:
+        user = User.query.get_or_404(user_id)
+
+        # Login-Statistiken
+        total_logins = LoginLog.query.filter_by(user_id=user_id, success=True).count()
+        failed_logins = LoginLog.query.filter_by(user_id=user_id, success=False).count()
+        last_login = LoginLog.query.filter_by(user_id=user_id, success=True).order_by(LoginLog.timestamp.desc()).first()
+
+        # Aktivitäten zählen
+        activities = AuditLog.query.filter_by(user_id=user_id).count()
+
+        return jsonify({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'full_name': user.full_name,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'is_admin': user.is_admin,
+            'is_active': user.is_active,
+            'is_verified': user.is_verified,
+            'two_factor_enabled': user.two_factor_enabled,
+            'created_at': user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else None,
+            'last_login': last_login.timestamp.strftime('%d.%m.%Y %H:%M') if last_login else None,
+            'login_count': total_logins,
+            'failed_login_count': failed_logins,
+            'activity_count': activities,
+            'is_locked': user.is_locked(),
+            'locked_until': user.locked_until.strftime('%d.%m.%Y %H:%M') if user.locked_until else None
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@users_bp.route('/unlock/<int:user_id>', methods=['POST'])
+@admin_required
+def unlock_user(user_id):
+    """Benutzer entsperren"""
+    try:
+        user = User.query.get_or_404(user_id)
+        user.unlock_account()
+
+        log_audit('USER_UNLOCKED', f'User {user.username} unlocked by {current_user.username}')
+
+        flash(f'Benutzer "{user.username}" wurde entsperrt', 'success')
+        return jsonify({'success': True})
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@users_bp.route('/search')
+@admin_required
+def search_users():
+    """Benutzer suchen (für Autocomplete)"""
+    try:
+        query = request.args.get('q', '').strip()
+        if len(query) < 2:
+            return jsonify([])
+
+        users = User.query.filter(
+            or_(
+                User.username.ilike(f'%{query}%'),
+                User.email.ilike(f'%{query}%'),
+                User.first_name.ilike(f'%{query}%'),
+                User.last_name.ilike(f'%{query}%')
+            )
+        ).limit(10).all()
+
+        results = []
+        for user in users:
+            results.append({
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'full_name': user.full_name,
+                'is_admin': user.is_admin,
+                'is_active': user.is_active
+            })
+
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify([])
+
+
+@users_bp.route('/stats')
+@admin_required
+def user_stats():
+    """Benutzer-Statistiken für Dashboard"""
+    try:
+        # Basis-Statistiken
+        total_users = User.query.count()
+        active_users = User.query.filter_by(is_active=True).count()
+        admin_users = User.query.filter_by(is_admin=True).count()
+        verified_users = User.query.filter_by(is_verified=True).count()
+
+        # 2FA-Statistiken
+        twofa_users = User.query.filter_by(two_factor_enabled=True).count()
+
+        # Login-Statistiken (letzte 30 Tage)
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        recent_logins = LoginLog.query.filter(
+            LoginLog.timestamp >= thirty_days_ago,
+            LoginLog.success == True
+        ).count()
+
+        # Neue Benutzer (letzte 30 Tage)
+        new_users = User.query.filter(
+            User.created_at >= thirty_days_ago
+        ).count()
+
+        # Gesperrte Benutzer
+        locked_users = User.query.filter(
+            User.locked_until > datetime.utcnow()
+        ).count()
+
+        return jsonify({
+            'total_users': total_users,
+            'active_users': active_users,
+            'admin_users': admin_users,
+            'verified_users': verified_users,
+            'twofa_users': twofa_users,
+            'recent_logins': recent_logins,
+            'new_users': new_users,
+            'locked_users': locked_users,
+            'active_percentage': round((active_users / total_users * 100) if total_users > 0 else 0, 1),
+            'verified_percentage': round((verified_users / total_users * 100) if total_users > 0 else 0, 1),
+            'twofa_percentage': round((twofa_users / total_users * 100) if total_users > 0 else 0, 1)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)})

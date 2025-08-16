@@ -48,6 +48,26 @@ def generate_serial_number(device_type, manufacturer=None):
     return f"{prefix}-{mfg_code}-{year}-{random_code}"
 
 
+def generate_device_name(device_type, location=None):
+    """Generiert automatisch einen Gerätenamen basierend auf Typ"""
+    type_names = {
+        'kaffee': 'Kaffeeautomat',
+        'getraenke': 'Getränkeautomat',
+        'snacks': 'Snackautomat',
+        'kombi': 'Kombiautomat'
+    }
+
+    base_name = type_names.get(device_type, 'Automat')
+
+    # Zähle existierende Geräte vom gleichen Typ
+    count = Device.query.filter_by(
+        type=DeviceType(device_type),
+        owner_id=current_user.id
+    ).count() + 1
+
+    return f"{base_name} #{count}"
+
+
 @devices_bp.route('/')
 @login_required
 def index():
@@ -88,174 +108,233 @@ def index():
             'total_revenue': device.get_total_revenue() if hasattr(device, 'get_total_revenue') else 0
         }
 
-    # JavaScript für erweiterte Funktionen
-    extra_scripts = """
-    <script>
-    function showDeviceDetails(deviceId) {
-        fetch(`/devices/api/${deviceId}`)
-            .then(response => response.json())
-            .then(data => {
-                // Details Modal füllen
-                document.getElementById('detailDeviceName').textContent = data.name;
-                document.getElementById('detailDeviceType').textContent = data.type;
-                document.getElementById('detailDeviceStatus').textContent = data.status;
-                document.getElementById('detailDeviceLocation').textContent = data.location || 'Kein Standort';
+        # JavaScript für erweiterte Funktionen
+        extra_scripts = """
+        <script>
+        function showDeviceDetails(deviceId) {
+            fetch(`/devices/api/${deviceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Details Modal füllen
+                    document.getElementById('detailDeviceName').textContent = data.name;
+                    document.getElementById('detailDeviceType').textContent = data.type;
+                    document.getElementById('detailDeviceStatus').textContent = data.status;
+                    document.getElementById('detailDeviceLocation').textContent = data.location || 'Kein Standort';
 
-                // Inventar anzeigen
-                let inventoryHtml = '';
-                if (data.inventory && Object.keys(data.inventory).length > 0) {
-                    for (const [productId, qty] of Object.entries(data.inventory)) {
-                        inventoryHtml += `
-                            <div class="inventory-item">
-                                <span>${data.product_names[productId] || 'Produkt ' + productId}</span>
-                                <span class="badge bg-primary">${qty} Stück</span>
-                            </div>
-                        `;
+                    // Inventar anzeigen
+                    let inventoryHtml = '';
+                    if (data.inventory && Object.keys(data.inventory).length > 0) {
+                        for (const [productId, qty] of Object.entries(data.inventory)) {
+                            inventoryHtml += `
+                                <div class="inventory-item">
+                                    <span>${data.product_names[productId] || 'Produkt ' + productId}</span>
+                                    <span class="badge bg-primary">${qty} Stück</span>
+                                </div>
+                            `;
+                        }
+                    } else {
+                        inventoryHtml = '<p class="text-muted">Kein Inventar erfasst</p>';
                     }
-                } else {
-                    inventoryHtml = '<p class="text-muted">Kein Inventar erfasst</p>';
-                }
-                document.getElementById('inventoryList').innerHTML = inventoryHtml;
+                    document.getElementById('inventoryList').innerHTML = inventoryHtml;
 
-                // Wechselgeld anzeigen
-                let changeHtml = '';
-                let totalChange = 0;
-                if (data.change_money && Object.keys(data.change_money).length > 0) {
-                    for (const [coin, qty] of Object.entries(data.change_money)) {
-                        const value = parseFloat(coin) * qty;
-                        totalChange += value;
-                        changeHtml += `
-                            <div class="change-item">
-                                <span>${coin} €</span>
-                                <span class="badge bg-warning text-dark">${qty}x = ${value.toFixed(2)} €</span>
-                            </div>
-                        `;
+                    // Wechselgeld anzeigen
+                    let changeHtml = '';
+                    let totalChange = 0;
+                    if (data.change_money && Object.keys(data.change_money).length > 0) {
+                        for (const [coin, qty] of Object.entries(data.change_money)) {
+                            const value = parseFloat(coin) * qty;
+                            totalChange += value;
+                            changeHtml += `
+                                <div class="change-item">
+                                    <span>${coin} €</span>
+                                    <span class="badge bg-warning text-dark">${qty}x = ${value.toFixed(2)} €</span>
+                                </div>
+                            `;
+                        }
+                        changeHtml += `<div class="mt-2"><strong>Gesamt: ${totalChange.toFixed(2)} €</strong></div>`;
+                    } else {
+                        changeHtml = '<p class="text-muted">Kein Wechselgeld erfasst</p>';
                     }
-                    changeHtml += `<div class="mt-2"><strong>Gesamt: ${totalChange.toFixed(2)} €</strong></div>`;
-                } else {
-                    changeHtml = '<p class="text-muted">Kein Wechselgeld erfasst</p>';
-                }
-                document.getElementById('changeList').innerHTML = changeHtml;
+                    document.getElementById('changeList').innerHTML = changeHtml;
 
-                // Modal öffnen
-                new bootstrap.Modal(document.getElementById('deviceDetailsModal')).show();
-            });
-    }
-
-    function editDevice(deviceId) {
-        fetch(`/devices/api/${deviceId}`)
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('device_id').value = deviceId;
-                document.getElementById('name').value = data.name;
-                document.getElementById('type').value = data.type;
-                document.getElementById('manufacturer').value = data.manufacturer || '';
-                document.getElementById('model').value = data.model || '';
-                document.getElementById('serial_number').value = data.serial_number || '';
-                document.getElementById('location').value = data.location || '';
-                document.getElementById('purchase_price').value = data.purchase_price || '';
-                document.getElementById('status').value = data.status;
-                document.getElementById('connection_type').value = data.connection_type || 'offline';
-
-                document.getElementById('deviceModalTitle').textContent = 'Gerät bearbeiten';
-                document.getElementById('deviceForm').action = `/devices/edit/${deviceId}`;
-
-                new bootstrap.Modal(document.getElementById('deviceModal')).show();
-            });
-    }
-
-    function showInventoryModal(deviceId) {
-        document.getElementById('inventory_device_id').value = deviceId;
-
-        // Lade aktuelle Inventardaten
-        fetch(`/devices/api/${deviceId}`)
-            .then(response => response.json())
-            .then(data => {
-                // Setze vorhandene Werte
-                if (data.inventory) {
-                    for (const [productId, qty] of Object.entries(data.inventory)) {
-                        const input = document.getElementById(`product_${productId}`);
-                        if (input) input.value = qty;
-                    }
-                }
-            });
-
-        new bootstrap.Modal(document.getElementById('inventoryModal')).show();
-    }
-
-    function showChangeMoneyModal(deviceId) {
-        document.getElementById('change_device_id').value = deviceId;
-
-        // Lade aktuelle Wechselgeld-Daten
-        fetch(`/devices/api/${deviceId}`)
-            .then(response => response.json())
-            .then(data => {
-                // Setze vorhandene Werte
-                if (data.change_money) {
-                    for (const [coin, qty] of Object.entries(data.change_money)) {
-                        const input = document.getElementById(`coin_${coin.replace('.', '_')}`);
-                        if (input) input.value = qty;
-                    }
-                }
-                calculateChangeTotal();
-            });
-
-        new bootstrap.Modal(document.getElementById('changeMoneyModal')).show();
-    }
-
-    function adjustCoin(coin, delta) {
-        const input = document.getElementById(`coin_${coin.replace('.', '_')}`);
-        let value = parseInt(input.value || 0) + delta;
-        if (value < 0) value = 0;
-        if (value > 100) value = 100;
-        input.value = value;
-        calculateChangeTotal();
-    }
-
-    function calculateChangeTotal() {
-        let total = 0;
-        document.querySelectorAll('.coin-input').forEach(input => {
-            const coin = parseFloat(input.dataset.coin);
-            const qty = parseInt(input.value || 0);
-            total += coin * qty;
-        });
-        document.getElementById('changeTotalAmount').textContent = total.toFixed(2);
-    }
-
-    function deleteDevice(deviceId, deviceName) {
-        if (confirm(`Möchten Sie das Gerät "${deviceName}" wirklich löschen?`)) {
-            fetch(`/devices/delete/${deviceId}`, { method: 'POST' })
-                .then(() => location.reload());
+                    // Modal öffnen
+                    new bootstrap.Modal(document.getElementById('deviceDetailsModal')).show();
+                });
         }
-    }
 
-    // Auto-generate serial number
-    document.addEventListener('DOMContentLoaded', function() {
-        const typeSelect = document.getElementById('type');
-        const manufacturerInput = document.getElementById('manufacturer');
-        const serialInput = document.getElementById('serial_number');
+        function editDevice(deviceId) {
+            fetch(`/devices/api/${deviceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('device_id').value = deviceId;
+                    document.getElementById('name').value = data.name;
+                    document.getElementById('type').value = data.type;
+                    document.getElementById('manufacturer').value = data.manufacturer || '';
+                    document.getElementById('model').value = data.model || '';
+                    document.getElementById('serial_number').value = data.serial_number || '';
+                    document.getElementById('location').value = data.location || '';
+                    document.getElementById('purchase_price').value = data.purchase_price || '';
+                    document.getElementById('status').value = data.status;
+                    document.getElementById('connection_type').value = data.connection_type || 'offline';
 
-        function updateSerialPreview() {
-            if (!serialInput.value) {
-                const typeMap = {'kaffee': 'KAF', 'getraenke': 'GET', 'snacks': 'SNK', 'kombi': 'KMB'};
-                const type = typeMap[typeSelect.value] || 'DEV';
+                    document.getElementById('deviceModalTitle').textContent = 'Gerät bearbeiten';
+                    document.getElementById('deviceForm').action = `/devices/edit/${deviceId}`;
 
-                let mfg = 'XXX';
-                if (manufacturerInput.value) {
-                    mfg = manufacturerInput.value.toUpperCase().replace(/[^A-Z]/g, '').substr(0, 3).padEnd(3, 'X');
-                }
+                    new bootstrap.Modal(document.getElementById('deviceModal')).show();
+                });
+        }
 
-                const year = new Date().getFullYear();
-                serialInput.placeholder = `${type}-${mfg}-${year}-XXXXXX (auto)`;
+        function showInventoryModal(deviceId) {
+            document.getElementById('inventory_device_id').value = deviceId;
+
+            // Lade aktuelle Inventardaten
+            fetch(`/devices/api/${deviceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Setze vorhandene Werte
+                    if (data.inventory) {
+                        for (const [productId, qty] of Object.entries(data.inventory)) {
+                            const input = document.getElementById(`product_${productId}`);
+                            if (input) input.value = qty;
+                        }
+                    }
+                });
+
+            new bootstrap.Modal(document.getElementById('inventoryModal')).show();
+        }
+
+        function showChangeMoneyModal(deviceId) {
+            document.getElementById('change_device_id').value = deviceId;
+
+            // Lade aktuelle Wechselgeld-Daten
+            fetch(`/devices/api/${deviceId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Setze vorhandene Werte
+                    if (data.change_money) {
+                        for (const [coin, qty] of Object.entries(data.change_money)) {
+                            const input = document.getElementById(`coin_${coin.replace('.', '_')}`);
+                            if (input) input.value = qty;
+                        }
+                    }
+                    calculateChangeTotal();
+                });
+
+            new bootstrap.Modal(document.getElementById('changeMoneyModal')).show();
+        }
+
+        function adjustCoin(coin, delta) {
+            const input = document.getElementById(`coin_${coin.replace('.', '_')}`);
+            let value = parseInt(input.value || 0) + delta;
+            if (value < 0) value = 0;
+            if (value > 100) value = 100;
+            input.value = value;
+            calculateChangeTotal();
+        }
+
+        function calculateChangeTotal() {
+            let total = 0;
+            document.querySelectorAll('.coin-input').forEach(input => {
+                const coin = parseFloat(input.dataset.coin);
+                const qty = parseInt(input.value || 0);
+                total += coin * qty;
+            });
+            document.getElementById('changeTotalAmount').textContent = total.toFixed(2);
+        }
+
+        function deleteDevice(deviceId, deviceName) {
+            if (confirm(`Möchten Sie das Gerät "${deviceName}" wirklich löschen?`)) {
+                fetch(`/devices/delete/${deviceId}`, { method: 'POST' })
+                    .then(() => location.reload());
             }
         }
 
-        if (typeSelect) typeSelect.addEventListener('change', updateSerialPreview);
-        if (manufacturerInput) manufacturerInput.addEventListener('input', updateSerialPreview);
-    });
-    </script>
-    """
+        // Auto-generate serial number UND name
+        document.addEventListener('DOMContentLoaded', function() {
+            const typeSelect = document.getElementById('type');
+            const manufacturerInput = document.getElementById('manufacturer');
+            const serialInput = document.getElementById('serial_number');
+            const nameInput = document.getElementById('name');
+            const locationInput = document.getElementById('location');
 
+            // Auto-Generate Name vom Server
+            function updateDeviceName() {
+                const typeSelect = document.getElementById('type');
+                const nameInput = document.getElementById('name');
+
+                // Nur wenn Name-Feld leer ist und Typ ausgewählt
+                if (!nameInput.value && typeSelect.value) {
+                    fetch(`/devices/generate-name?device_type=${typeSelect.value}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                nameInput.placeholder = data.name + ' (automatisch)';
+                            }
+                        });
+                }
+            }
+
+            // Serial Number Preview
+            function updateSerialPreview() {
+                if (!serialInput.value) {
+                    const typeMap = {'kaffee': 'KAF', 'getraenke': 'GET', 'snacks': 'SNK', 'kombi': 'KMB'};
+                    const type = typeMap[typeSelect.value] || 'DEV';
+
+                    let mfg = 'XXX';
+                    if (manufacturerInput.value) {
+                        mfg = manufacturerInput.value.toUpperCase().replace(/[^A-Z]/g, '').substr(0, 3).padEnd(3, 'X');
+                    }
+
+                    const year = new Date().getFullYear();
+                    serialInput.placeholder = `${type}-${mfg}-${year}-XXXXXX (auto)`;
+                }
+            }
+
+            // Event Listener - NUR auf Typ-Änderung
+            if (typeSelect) {
+                typeSelect.addEventListener('change', function() {
+                    updateSerialPreview();
+                    updateDeviceName();  // Name generieren bei Typ-Änderung
+                });
+            }
+
+            if (manufacturerInput) {
+                manufacturerInput.addEventListener('input', updateSerialPreview);
+            }  // HIER FEHLTE DIE SCHLIESSENDE KLAMMER!
+
+            // Beim Modal öffnen - Auto-Generate Serial vom Server
+            const modal = document.getElementById('deviceModal');
+            if (modal) {
+                modal.addEventListener('shown.bs.modal', function() {
+                    // Nur bei neuem Gerät (nicht beim Editieren)
+                    if (!document.getElementById('device_id').value) {
+                        // Serial Number generieren
+                        if (!serialInput.value) {
+                            fetch('/devices/generate-serial')
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.success) {
+                                        serialInput.value = data.serial;
+                                    }
+                                });
+                        }
+                        // Name generieren
+                        updateDeviceName();
+                    }
+                });
+
+                // Reset beim Modal schließen
+                modal.addEventListener('hidden.bs.modal', function() {
+                    if (!document.getElementById('device_id').value) {
+                        document.getElementById('deviceForm').reset();
+                        document.getElementById('deviceModalTitle').textContent = 'Neues Gerät hinzufügen';
+                        document.getElementById('deviceForm').action = '/devices/add';
+                    }
+                });
+            }
+        });
+        </script>
+        """
     # CSS für erweiterte Geräte-Ansicht
     extra_css = """
     <style>
@@ -519,8 +598,9 @@ def index():
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label class="form-label">Name *</label>
-                                    <input type="text" id="name" name="name" class="form-control" required>
+                                    <label class="form-label">Name</label>
+                                    <input type="text" id="name" name="name" class="form-control" 
+                                           placeholder="Wird automatisch generiert wenn leer">
                                 </div>
                             </div>
                             <div class="col-md-6">
@@ -762,6 +842,26 @@ def index():
         )
     )
 
+@devices_bp.route('/generate-name')
+@login_required
+def generate_name():
+    """API Route für automatische Namengenerierung"""
+    device_type = request.args.get('device_type')
+
+    if device_type:
+        name = generate_device_name(device_type)
+        return jsonify({'success': True, 'name': name})
+
+    return jsonify({'success': False, 'error': 'Device type required'})
+
+
+@devices_bp.route('/generate-serial')
+@login_required
+def generate_serial():
+    """API Route für automatische Seriennummer-Generierung"""
+    serial = generate_serial_number('unknown')  # Basis-Seriennummer
+    return jsonify({'success': True, 'serial': serial})
+
 
 @devices_bp.route('/add', methods=['POST'])
 @login_required
@@ -776,8 +876,15 @@ def add_device():
                 request.form.get('manufacturer')
             )
 
+        # Auto-generate name if empty  <-- HIER EINFÜGEN
+        name = request.form.get('name')
+        if not name:
+            name = generate_device_name(
+                request.form.get('type'),
+            )
+
         device = Device(
-            name=request.form.get('name'),
+            name=name,
             type=DeviceType(request.form.get('type')),
             manufacturer=request.form.get('manufacturer'),
             model=request.form.get('model'),

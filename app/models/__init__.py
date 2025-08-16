@@ -350,6 +350,14 @@ class Device(TimestampMixin, UUIDMixin, db.Model):
     # Notes
     notes = db.Column(db.Text)
 
+    # Erweiterte Felder für Inventar und Wechselgeld
+    connection_type = db.Column(db.String(20), default='offline')  # offline, online, telemetry
+    inventory_data = db.Column(db.JSON)  # Produkt-Bestand als JSON
+    change_money = db.Column(db.JSON)  # Wechselgeld-Bestand als JSON
+    last_inventory_update = db.Column(db.DateTime)
+    last_change_update = db.Column(db.DateTime)
+    maintenance_date = db.Column(db.Date)
+
     @hybrid_property
     def is_active(self):
         """Ist das Gerät aktiv?"""
