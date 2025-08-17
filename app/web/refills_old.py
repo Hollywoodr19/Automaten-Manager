@@ -13,6 +13,7 @@ from app.models import (
     Product, ProductUnit, ProductCategory,
     Supplier, Refill, RefillItem, InventoryMovement
 )
+# Import erfolgt in den Funktionen
 import json
 import base64
 
@@ -41,23 +42,371 @@ def index():
                 'percentage': (current_stock / product.reorder_point * 100) if product.reorder_point > 0 else 0
             })
 
-    # Produkt-Optionen für JavaScript
-    product_options = '<option value="">-- Wählen --</option>'
-    for product in products:
-        unit_price = product.default_price or 0
-        product_options += f'<option value="{product.id}" data-price="{unit_price}" data-unit="{product.unit.value}">'
-        product_options += f'{product.name} ({product.unit.value})</option>'
+    # JavaScript mit verbesserter Berechnung und Upload
+    extra_scripts = """
+    <script>
+    let itemCount = 0;
 
-    # JavaScript einbinden
-    extra_scripts = f"""
-    <!-- Verstecktes Template für Produkt-Optionen -->
-    <div id="product-template" style="display:none;">{product_options}</div>
-    
-    <!-- Externe JavaScript-Datei -->
-    <script src="/static/js/refills.js"></script>
+    function addProductLine() {{
+        itemCount++;
+        const template = `
+            <div class="product-row" id="item-${{itemCount}}">
+                <div class="row align-items-center">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-1">Produkt</label>
+                        <select class="form-select product-select" name="product_id[]" required onchange="updatePrice(${{itemCount}})">
+                            <option value="">-- Wählen --</option>
     """
 
-    # CSS für Warenwirtschaft
+    # Produkte für JavaScript
+    for product in products:
+        unit_price = product.default_price or 0
+        extra_scripts += f"""
+                            <option value="{product.id}" data-price="{unit_price}" data-unit="{product.unit.value}">
+                                {product.name} ({product.unit.value})
+                            </option>
+        """
+
+    extra_scripts += f"""
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small mb-1">Menge</label>
+                        <input type="number" class="form-control quantity-input" name="quantity[]" 
+                               placeholder="0" step="0.001" required onchange="calculateTotal(${{itemCount}})">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small mb-1">Stückpreis €</label>
+                        <input type="number" class="form-control price-input" name="unit_price[]" 
+                               placeholder="0.00" step="0.01" required onchange="calculateTotal(${{itemCount}})">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small mb-1">Rabatt €</label>
+                        <input type="number" class="form-control discount-input bg-warning bg-opacity-10" 
+                               name="line_discount[]" placeholder="0.00" step="0.01" value="0" 
+                               onchange="calculateTotal(${{itemCount}})" title="Rabatt für diese Position">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small mb-1">Gesamt €</label>
+                        <input type="text" class="form-control total-input fw-bold" name="total_price[]" 
+                               placeholder="0.00" readonly>
+                    </div>
+                    <div class="col-md-1 text-center">
+                        <label class="form-label small mb-1">&nbsp;</label><br>
+                        <button type="button" class="btn btn-sm btn-danger" onclick="removeItem(${{itemCount}})">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="row mt-1">
+                    <div class="col-md-11">
+                        <input type="text" class="form-control form-control-sm" name="line_discount_reason[]" 
+                               placeholder="Rabatt-Grund (optional, z.B. Mengenrabatt, Aktion)">
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('product-items').insertAdjacentHTML('beforeend', template);
+    }}
+
+    function removeItem(id) {{
+        document.getElementById(`item-${{id}}`).remove();
+        calculateGrandTotal();
+    }}
+
+    function updatePrice(id) {{
+        const select = document.querySelector(`#item-${{id}} .product-select`);
+        const priceInput = document.querySelector(`#item-${{id}} .price-input`);
+        const selectedOption = select.options[select.selectedIndex];
+
+        if (selectedOption.dataset.price) {{
+            priceInput.value = selectedOption.dataset.price;
+            calculateTotal(id);
+        }}
+    }}
+
+    function calculateTotal(id) {{
+        const quantity = parseFloat(document.querySelector(`#item-${{id}} .quantity-input`).value) || 0;
+        const price = parseFloat(document.querySelector(`#item-${{id}} .price-input`).value) || 0;
+        const discount = parseFloat(document.querySelector(`#item-${{id}} .discount-input`).value) || 0;
+
+        // Berechnung: (Menge × Preis) - Rabatt
+        const grossTotal = quantity * price;
+        const netTotal = grossTotal - discount;
+
+        // Visual feedback wenn Rabatt vorhanden
+        const discountInput = document.querySelector(`#item-${{id}} .discount-input`);
+        if (discount > 0) {{
+            discountInput.classList.add('border-warning');
+            // Zeige Ersparnis in Prozent
+            if (grossTotal > 0) {{
+                const savedPercent = ((discount / grossTotal) * 100).toFixed(1);
+                discountInput.title = `Ersparnis: ${{savedPercent}}%`;
+            }}
+        }} else {{
+            discountInput.classList.remove('border-warning');
+        }}
+
+        document.querySelector(`#item-${{id}} .total-input`).value = netTotal.toFixed(2);
+        calculateGrandTotal();
+    }}
+
+    function calculateGrandTotal() {{
+        let grandTotal = 0;
+        let totalLineDiscounts = 0;
+
+        // Summiere alle Zeilen-Rabatte
+        document.querySelectorAll('.discount-input').forEach(input => {{
+            totalLineDiscounts += parseFloat(input.value) || 0;
+        }});
+
+        // Summiere alle Zeilen-Totale (bereits mit Rabatt)
+        document.querySelectorAll('.total-input').forEach(input => {{
+            grandTotal += parseFloat(input.value) || 0;
+        }});
+
+        const taxRate = parseFloat(document.getElementById('taxRate').value) || 20;
+        const pricesIncludeTax = document.getElementById('pricesIncludeTax').checked;
+        const shipping = parseFloat(document.querySelector('[name="shipping_cost"]').value) || 0;
+        const deposit = parseFloat(document.querySelector('[name="deposit_amount"]').value) || 0;
+        const globalDiscount = parseFloat(document.querySelector('[name="discount_amount"]').value) || 0;
+
+        // Globaler Rabatt zusätzlich
+        grandTotal = grandTotal - globalDiscount;
+
+        let subtotal, tax, total;
+
+        if (pricesIncludeTax) {{
+            // Preise enthalten bereits MwSt - herausrechnen
+            total = grandTotal;
+            subtotal = total / (1 + taxRate/100);
+            tax = total - subtotal;
+        }} else {{
+            // Nettopreise - MwSt draufrechnen
+            subtotal = grandTotal;
+            tax = subtotal * (taxRate/100);
+            total = subtotal + tax;
+        }}
+
+        // Versand und Pfand hinzufügen
+        const finalTotal = total + shipping + deposit;
+
+        // Anzeige aktualisieren
+        document.getElementById('subtotal').innerHTML = `
+            <small class="text-muted">Warenwert netto:</small><br>
+            <strong>${{subtotal.toFixed(2)}} €</strong>
+        `;
+        document.getElementById('tax').innerHTML = `
+            <small class="text-muted">MwSt (${{taxRate}}%):</small><br>
+            <strong>${{tax.toFixed(2)}} €</strong>
+        `;
+
+        // Zeilen-Rabatte anzeigen
+        if (totalLineDiscounts > 0) {{
+            document.getElementById('line-discounts-row').style.display = 'flex';
+            document.getElementById('line-discounts-display').innerHTML = `
+                <span class="text-warning">- ${{totalLineDiscounts.toFixed(2)}} €</span>
+            `;
+        }} else {{
+            document.getElementById('line-discounts-row').style.display = 'none';
+        }}
+
+        // Globaler Rabatt
+        if (globalDiscount > 0) {{
+            document.getElementById('discount-row').style.display = 'flex';
+            document.getElementById('discount-display').textContent = '- ' + globalDiscount.toFixed(2) + ' €';
+        }} else {{
+            document.getElementById('discount-row').style.display = 'none';
+        }}
+
+        // Versandzeile
+        if (shipping > 0) {{
+            document.getElementById('shipping-row').style.display = 'flex';
+            document.getElementById('shipping-amount').textContent = shipping.toFixed(2) + ' €';
+        }} else {{
+            document.getElementById('shipping-row').style.display = 'none';
+        }}
+
+        // Pfandzeile
+        if (deposit > 0) {{
+            document.getElementById('deposit-row').style.display = 'flex';
+            document.getElementById('deposit-amount').textContent = deposit.toFixed(2) + ' €';
+        }} else {{
+            document.getElementById('deposit-row').style.display = 'none';
+        }}
+
+        // Gesamtersparnis anzeigen
+        const totalSavings = totalLineDiscounts + globalDiscount;
+        if (totalSavings > 0) {{
+            document.getElementById('savings-info').style.display = 'block';
+            document.getElementById('total-savings').textContent = totalSavings.toFixed(2);
+        }} else {{
+            document.getElementById('savings-info').style.display = 'none';
+        }}
+
+        document.getElementById('grand-total').innerHTML = `<strong>${{finalTotal.toFixed(2)}} €</strong>`;
+    }}
+
+    // Drag & Drop für Kassenbon
+    function setupDragDrop() {{
+        const dropZone = document.getElementById('receipt-drop-zone');
+        const fileInput = document.getElementById('receipt-file');
+        const preview = document.getElementById('receipt-preview');
+
+        if (!dropZone) return;
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {{
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        }});
+
+        function preventDefaults(e) {{
+            e.preventDefault();
+            e.stopPropagation();
+        }}
+
+        ['dragenter', 'dragover'].forEach(eventName => {{
+            dropZone.addEventListener(eventName, () => {{
+                dropZone.classList.add('drag-over');
+            }}, false);
+        }});
+
+        ['dragleave', 'drop'].forEach(eventName => {{
+            dropZone.addEventListener(eventName, () => {{
+                dropZone.classList.remove('drag-over');
+            }}, false);
+        }});
+
+        dropZone.addEventListener('drop', handleDrop, false);
+        fileInput.addEventListener('change', handleFileSelect, false);
+
+        function handleDrop(e) {{
+            const files = e.dataTransfer.files;
+            handleFiles(files);
+        }}
+
+        function handleFileSelect(e) {{
+            const files = e.target.files;
+            handleFiles(files);
+        }}
+
+        function handleFiles(files) {{
+            if (files.length > 0) {{
+                const file = files[0];
+                if (file.type.match('image.*') || file.type === 'application/pdf') {{
+                    const reader = new FileReader();
+                    reader.onload = function(e) {{
+                        uploadedReceipt = {{
+                            name: file.name,
+                            type: file.type,
+                            data: e.target.result
+                        }};
+                        showPreview(file, e.target.result);
+                    }};
+                    reader.readAsDataURL(file);
+                }} else {{
+                    alert('Bitte nur Bilder oder PDFs hochladen!');
+                }}
+            }}
+        }}
+
+        function showPreview(file, dataUrl) {{
+            preview.innerHTML = '';
+            if (file.type.match('image.*')) {{
+                preview.innerHTML = `
+                    <div class="receipt-preview-container">
+                        <img src="${{dataUrl}}" class="img-fluid rounded" style="max-height: 200px;">
+                        <p class="mt-2 mb-0"><small>${{file.name}}</small></p>
+                        <button type="button" class="btn btn-sm btn-danger mt-2" onclick="removeReceipt()">
+                            <i class="bi bi-trash"></i> Entfernen
+                        </button>
+                    </div>
+                `;
+            }} else {{
+                preview.innerHTML = `
+                    <div class="receipt-preview-container">
+                        <i class="bi bi-file-pdf display-1 text-danger"></i>
+                        <p class="mt-2 mb-0"><small>${{file.name}}</small></p>
+                        <button type="button" class="btn btn-sm btn-danger mt-2" onclick="removeReceipt()">
+                            <i class="bi bi-trash"></i> Entfernen
+                        </button>
+                    </div>
+                `;
+            }}
+
+            // Hidden fields für Form Submit
+            if (!document.getElementById('receipt_data')) {{
+                const hiddenData = document.createElement('input');
+                hiddenData.type = 'hidden';
+                hiddenData.id = 'receipt_data';
+                hiddenData.name = 'receipt_data';
+                hiddenData.value = dataUrl;
+                document.getElementById('refillForm').appendChild(hiddenData);
+
+                const hiddenName = document.createElement('input');
+                hiddenName.type = 'hidden';
+                hiddenName.id = 'receipt_filename';
+                hiddenName.name = 'receipt_filename';
+                hiddenName.value = file.name;
+                document.getElementById('refillForm').appendChild(hiddenName);
+            }} else {{
+                document.getElementById('receipt_data').value = dataUrl;
+                document.getElementById('receipt_filename').value = file.name;
+            }}
+        }}
+    }}
+
+    let uploadedReceipt = null;
+
+    function removeReceipt() {{
+        uploadedReceipt = null;
+        document.getElementById('receipt-preview').innerHTML = '';
+        document.getElementById('receipt-file').value = '';
+        if (document.getElementById('receipt_data')) {{
+            document.getElementById('receipt_data').remove();
+            document.getElementById('receipt_filename').remove();
+        }}
+    }}
+
+    // Event Listener
+    document.addEventListener('DOMContentLoaded', function() {{
+        const taxRateInput = document.getElementById('taxRate');
+        const pricesIncludeTaxCheckbox = document.getElementById('pricesIncludeTax');
+        const shippingInput = document.querySelector('[name="shipping_cost"]');
+        const depositInput = document.querySelector('[name="deposit_amount"]');
+        const discountInput = document.querySelector('[name="discount_amount"]');
+
+        if (taxRateInput) taxRateInput.addEventListener('change', calculateGrandTotal);
+        if (pricesIncludeTaxCheckbox) pricesIncludeTaxCheckbox.addEventListener('change', calculateGrandTotal);
+        if (shippingInput) shippingInput.addEventListener('input', calculateGrandTotal);
+        if (depositInput) depositInput.addEventListener('input', calculateGrandTotal);
+        if (discountInput) discountInput.addEventListener('input', calculateGrandTotal);
+
+        setupDragDrop();
+
+        // Erste Zeile hinzufügen
+        if (document.getElementById('product-items')) {{
+            addProductLine();
+        }}
+    }});
+
+    function viewRefill(id) {{
+        window.location.href = `/refills/view/${{id}}`;
+    }}
+
+    // Click handler für Drop Zone
+    document.addEventListener('DOMContentLoaded', function() {{
+        const dropZone = document.getElementById('receipt-drop-zone');
+        if (dropZone) {{
+            dropZone.addEventListener('click', function() {{
+                document.getElementById('receipt-file').click();
+            }});
+        }}
+    }});
+    </script>
+    """
+
+    # CSS für Warenwirtschaft und Upload
     extra_css = """
     <style>
         .product-row {
@@ -238,12 +587,6 @@ def index():
                                 <td>
                                     <button class="btn btn-sm btn-info" onclick="viewRefill({refill.id})">
                                         <i class="bi bi-eye"></i>
-                                    </button>
-                                    <button class="btn btn-sm btn-warning" onclick="editRefill({refill.id})">
-                                        <i class="bi bi-pencil"></i>
-                                    </button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteRefill({refill.id})">
-                                        <i class="bi bi-trash"></i>
                                     </button>
                                 </td>
                             </tr>
@@ -488,7 +831,38 @@ def index():
     from app.web.dashboard_modern import render_modern_template
     
     # Kombiniere Content, Scripts und CSS
+    # WICHTIG: Modal muss NACH dem Scripts kommen, damit die Funktionen verfügbar sind
     full_content = extra_css + content + extra_scripts
+    
+    # Debug-Output für Browser-Konsole
+    debug_script = """
+    <script>
+    console.log('=== REFILLS MODULE LOADED ===');
+    console.log('Modal Element:', document.getElementById('refillModal'));
+    console.log('Product Items:', document.getElementById('product-items'));
+    console.log('Functions available:');
+    console.log('- addProductLine:', typeof addProductLine);
+    console.log('- calculateTotal:', typeof calculateTotal);
+    console.log('- calculateGrandTotal:', typeof calculateGrandTotal);
+    
+    // Stelle sicher, dass Modal nach DOM-Load initialisiert wird
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('Refills DOM Ready');
+        var refillModal = document.getElementById('refillModal');
+        if (refillModal) {
+            refillModal.addEventListener('shown.bs.modal', function () {
+                console.log('Modal opened!');
+                if (document.getElementById('product-items').children.length === 0) {
+                    console.log('Adding first product line...');
+                    addProductLine();
+                }
+            });
+        }
+    });
+    </script>
+    """
+    
+    full_content = extra_css + content + extra_scripts + debug_script
     
     return render_modern_template(
         content=full_content,
@@ -501,461 +875,6 @@ def index():
             {'text': 'Nachfüllungen'}
         ]
     )
-
-
-@refills_bp.route('/edit/<int:refill_id>', methods=['GET', 'POST'])
-@login_required
-def edit_refill(refill_id):
-    """Nachfüllung bearbeiten"""
-    refill = Refill.query.filter_by(id=refill_id, user_id=current_user.id).first_or_404()
-    
-    if request.method == 'POST':
-        # Update verarbeiten
-        try:
-            # Basis-Daten aktualisieren
-            refill.date = datetime.strptime(request.form.get('date'), '%Y-%m-%d').date()
-            refill.supplier_id = request.form.get('supplier_id') or None
-            refill.device_id = request.form.get('device_id') or None
-            refill.invoice_number = request.form.get('invoice_number')
-            refill.delivery_note = request.form.get('delivery_note')
-            refill.shipping_cost = Decimal(request.form.get('shipping_cost', 0))
-            refill.deposit_amount = Decimal(request.form.get('deposit_amount', 0))
-            refill.tax_rate = Decimal(request.form.get('tax_rate', '20'))
-            refill.prices_include_tax = request.form.get('prices_include_tax') == 'on'
-            refill.discount_amount = Decimal(request.form.get('discount_amount', 0))
-            refill.discount_reason = request.form.get('discount_reason', '')
-            
-            # Alte Items löschen
-            RefillItem.query.filter_by(refill_id=refill_id).delete()
-            
-            # Alte InventoryMovements löschen
-            from app.models import InventoryMovement
-            InventoryMovement.query.filter_by(
-                reason='Nachfüllung',
-                user_id=current_user.id
-            ).filter(
-                InventoryMovement.created_at >= refill.created_at - timedelta(seconds=5),
-                InventoryMovement.created_at <= refill.created_at + timedelta(seconds=5)
-            ).delete()
-            
-            # Neue Produkte hinzufügen
-            product_ids = request.form.getlist('product_id[]')
-            quantities = request.form.getlist('quantity[]')
-            unit_prices = request.form.getlist('unit_price[]')
-            line_discounts = request.form.getlist('line_discount[]')
-            line_discount_reasons = request.form.getlist('line_discount_reason[]')
-            
-            items_total = Decimal('0')
-            total_line_discount = Decimal('0')
-            
-            for i in range(len(product_ids)):
-                if product_ids[i]:  # Nur wenn Produkt ausgewählt
-                    quantity = Decimal(quantities[i])
-                    unit_price = Decimal(unit_prices[i])
-                    line_discount = Decimal(line_discounts[i] if i < len(line_discounts) and line_discounts[i] else 0)
-                    line_discount_reason = line_discount_reasons[i] if i < len(line_discount_reasons) else ''
-                    
-                    # Berechnung mit Zeilen-Rabatt
-                    gross_price = quantity * unit_price
-                    net_price = gross_price - line_discount
-                    
-                    item = RefillItem(
-                        refill_id=refill.id,
-                        product_id=int(product_ids[i]),
-                        quantity=quantity,
-                        unit_price=unit_price,
-                        total_price=net_price,
-                        line_discount=line_discount,
-                        line_discount_reason=line_discount_reason
-                    )
-                    db.session.add(item)
-                    items_total += net_price
-                    total_line_discount += line_discount
-                    
-                    # Neue Lagerbewegung erstellen
-                    movement = InventoryMovement(
-                        product_id=int(product_ids[i]),
-                        device_id=refill.device_id,
-                        refill_item_id=item.id,
-                        type='IN',
-                        quantity=quantity,
-                        reason='Nachfüllung',
-                        user_id=current_user.id
-                    )
-                    db.session.add(movement)
-            
-            # Gesamtsummen neu berechnen
-            items_total_after_global_discount = items_total - refill.discount_amount
-            
-            if refill.prices_include_tax:
-                # Preise enthalten MwSt - herausrechnen
-                total_with_tax = items_total_after_global_discount
-                subtotal = total_with_tax / (1 + refill.tax_rate / 100)
-                refill.tax_amount = total_with_tax - subtotal
-            else:
-                # Nettopreise - MwSt draufrechnen
-                subtotal = items_total_after_global_discount
-                refill.tax_amount = subtotal * (refill.tax_rate / 100)
-            
-            refill.subtotal = subtotal
-            refill.total_amount = subtotal + refill.tax_amount + refill.shipping_cost + refill.deposit_amount
-            
-            # Ausgabe aktualisieren wenn vorhanden
-            if hasattr(refill, 'expense_id') and refill.expense_id:
-                expense = Expense.query.get(refill.expense_id)
-                if expense:
-                    expense.amount = refill.total_amount
-                    expense.date = refill.date
-                    expense.device_id = refill.device_id
-                    expense.supplier = refill.supplier.name if refill.supplier else None
-                    expense.invoice_number = refill.invoice_number
-            
-            db.session.commit()
-            flash('Nachfüllung wurde erfolgreich aktualisiert!', 'success')
-            return redirect(url_for('refills.view_refill', refill_id=refill_id))
-            
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Fehler beim Aktualisieren: {str(e)}', 'danger')
-            import traceback
-            print(traceback.format_exc())
-    
-    # GET Request - Zeige Edit-Formular
-    products = Product.query.filter_by(user_id=current_user.id).all()
-    suppliers = Supplier.query.filter_by(user_id=current_user.id).all()
-    devices = Device.query.filter_by(owner_id=current_user.id).all()
-    
-    # Produkt-Optionen für JavaScript
-    product_options = '<option value="">-- Wählen --</option>'
-    for product in products:
-        unit_price = product.default_price or 0
-        product_options += f'<option value="{product.id}" data-price="{unit_price}" data-unit="{product.unit.value}">'
-        product_options += f'{product.name} ({product.unit.value})</option>'
-    
-    # JavaScript für Edit
-    extra_scripts = f'''
-    <!-- Verstecktes Template für Produkt-Optionen -->
-    <div id="product-template" style="display:none;">{product_options}</div>
-    
-    <!-- Externe JavaScript-Datei -->
-    <script src="/static/js/refills.js"></script>
-    
-    <script>
-    // Beim Laden die vorhandenen Items anzeigen
-    document.addEventListener('DOMContentLoaded', function() {{
-        // Items sind bereits im HTML, keine weitere Aktion nötig
-        calculateGrandTotal();
-    }});
-    </script>
-    '''
-    
-    # CSS
-    extra_css = '''
-    <style>
-        .product-row {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 15px;
-            border: 1px solid #dee2e6;
-        }
-        .total-row {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 20px;
-            margin-top: 20px;
-        }
-    </style>
-    '''
-    
-    # HTML Content für Edit
-    content = f'''
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2 class="text-white">
-            <i class="bi bi-pencil"></i> Nachfüllung bearbeiten
-        </h2>
-        <a href="{url_for('refills.index')}" class="btn btn-outline-light">
-            <i class="bi bi-arrow-left"></i> Zurück
-        </a>
-    </div>
-    
-    <div class="card">
-        <div class="card-body">
-            <form method="POST" action="{url_for('refills.edit_refill', refill_id=refill_id)}" id="refillForm">
-                <div class="row mb-3">
-                    <div class="col-md-4">
-                        <label class="form-label">Datum</label>
-                        <input type="date" name="date" class="form-control" value="{refill.date}" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Lieferant</label>
-                        <select name="supplier_id" class="form-select">
-                            <option value="">-- Wählen --</option>
-    '''
-    
-    for supplier in suppliers:
-        selected = 'selected' if refill.supplier_id == supplier.id else ''
-        content += f'<option value="{supplier.id}" {selected}>{supplier.name}</option>'
-    
-    content += f'''
-                        </select>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Gerät</label>
-                        <select name="device_id" class="form-select">
-                            <option value="">-- Allgemein --</option>
-    '''
-    
-    for device in devices:
-        selected = 'selected' if refill.device_id == device.id else ''
-        content += f'<option value="{device.id}" {selected}>{device.name}</option>'
-    
-    content += f'''
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="row mb-3">
-                    <div class="col-md-3">
-                        <label class="form-label">Rechnungsnummer</label>
-                        <input type="text" name="invoice_number" class="form-control" value="{refill.invoice_number or ''}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Lieferschein</label>
-                        <input type="text" name="delivery_note" class="form-control" value="{refill.delivery_note or ''}">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Versand (€)</label>
-                        <input type="number" name="shipping_cost" class="form-control" step="0.01" value="{refill.shipping_cost:.2f}">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Pfand (€)</label>
-                        <input type="number" name="deposit_amount" class="form-control" step="0.01" value="{refill.deposit_amount:.2f}">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">Zusatz-Rabatt (€)</label>
-                        <input type="number" name="discount_amount" class="form-control" step="0.01" value="{refill.discount_amount:.2f if hasattr(refill, 'discount_amount') else 0}">
-                    </div>
-                </div>
-                
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Zusatz-Rabatt Grund</label>
-                        <input type="text" name="discount_reason" class="form-control" value="{refill.discount_reason if hasattr(refill, 'discount_reason') else ''}">
-                    </div>
-                    <div class="col-md-2">
-                        <label class="form-label">MwSt (%)</label>
-                        <input type="number" name="tax_rate" class="form-control" step="0.1" value="{refill.tax_rate}" id="taxRate">
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-check mt-4">
-                            <input class="form-check-input" type="checkbox" id="pricesIncludeTax" 
-                                   name="prices_include_tax" {'checked' if refill.prices_include_tax else ''}>
-                            <label class="form-check-label" for="pricesIncludeTax">
-                                Preise inkl. MwSt
-                            </label>
-                        </div>
-                    </div>
-                </div>
-                
-                <hr>
-                
-                <h6>Produkte</h6>
-                <div id="product-items">
-    '''
-    
-    # Vorhandene Items anzeigen
-    item_count = 0
-    for item in refill.items:
-        item_count += 1
-        content += f'''
-                    <div class="product-row" id="item-{item_count}">
-                        <div class="row align-items-center">
-                            <div class="col-md-3">
-                                <label class="form-label small mb-1">Produkt</label>
-                                <select class="form-select product-select" name="product_id[]" required onchange="updatePrice({item_count})">
-                                    <option value="">-- Wählen --</option>
-        '''
-        
-        for product in products:
-            selected = 'selected' if item.product_id == product.id else ''
-            unit_price = product.default_price or 0
-            content += f'''
-                                    <option value="{product.id}" data-price="{unit_price}" data-unit="{product.unit.value}" {selected}>
-                                        {product.name} ({product.unit.value})
-                                    </option>
-            '''
-        
-        line_discount = item.line_discount if hasattr(item, 'line_discount') else 0
-        line_discount_reason = item.line_discount_reason if hasattr(item, 'line_discount_reason') else ''
-        
-        content += f'''
-                                </select>
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label small mb-1">Menge</label>
-                                <input type="number" class="form-control quantity-input" name="quantity[]" 
-                                       value="{item.quantity}" step="0.001" required onchange="calculateTotal({item_count})">
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label small mb-1">Stückpreis €</label>
-                                <input type="number" class="form-control price-input" name="unit_price[]" 
-                                       value="{item.unit_price:.2f}" step="0.01" required onchange="calculateTotal({item_count})">
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label small mb-1">Rabatt €</label>
-                                <input type="number" class="form-control discount-input" name="line_discount[]" 
-                                       value="{line_discount:.2f}" step="0.01" onchange="calculateTotal({item_count})">
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label small mb-1">Gesamt €</label>
-                                <input type="text" class="form-control total-input fw-bold" name="total_price[]" 
-                                       value="{item.total_price:.2f}" readonly>
-                            </div>
-                            <div class="col-md-1 text-center">
-                                <label class="form-label small mb-1">&nbsp;</label><br>
-                                <button type="button" class="btn btn-sm btn-danger" onclick="removeItem({item_count})">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="row mt-1">
-                            <div class="col-md-11">
-                                <input type="text" class="form-control form-control-sm" name="line_discount_reason[]" 
-                                       value="{line_discount_reason}" placeholder="Rabatt-Grund (optional)">
-                            </div>
-                        </div>
-                    </div>
-        '''
-    
-    content += f'''
-                </div>
-                
-                <button type="button" class="btn btn-sm btn-success mt-2" onclick="addProductLine()">
-                    <i class="bi bi-plus"></i> Produkt hinzufügen
-                </button>
-                
-                <div class="total-row">
-                    <div class="row">
-                        <div class="col-md-6 text-end" id="subtotal">
-                            <small class="text-muted">Warenwert netto:</small><br>
-                            <strong>{refill.subtotal:.2f} €</strong>
-                        </div>
-                        <div class="col-md-6" id="tax">
-                            <small class="text-muted">MwSt:</small><br>
-                            <strong>{refill.tax_amount:.2f} €</strong>
-                        </div>
-                    </div>
-                    <div class="row mt-2" id="line-discounts-row" style="display:none;">
-                        <div class="col-md-6 text-end">
-                            <span class="text-warning">Zeilen-Rabatte gesamt:</span>
-                        </div>
-                        <div class="col-md-6" id="line-discounts-display">0.00 €</div>
-                    </div>
-                    <div class="row mt-2" id="discount-row" style="display:none;">
-                        <div class="col-md-6 text-end">
-                            <span class="text-warning">Zusätzlicher Rabatt:</span>
-                        </div>
-                        <div class="col-md-6 text-warning" id="discount-display">0.00 €</div>
-                    </div>
-                    <div class="row mt-2" id="shipping-row" style="display:none;">
-                        <div class="col-md-6 text-end">Versandkosten:</div>
-                        <div class="col-md-6" id="shipping-amount">0.00 €</div>
-                    </div>
-                    <div class="row mt-2" id="deposit-row" style="display:none;">
-                        <div class="col-md-6 text-end">
-                            <span class="text-info">Pfand (0% MwSt):</span>
-                        </div>
-                        <div class="col-md-6" id="deposit-amount">0.00 €</div>
-                    </div>
-                    <div class="row mt-3 pt-3 border-top">
-                        <div class="col-md-6 text-end"><h5>Gesamt:</h5></div>
-                        <div class="col-md-6"><h5 id="grand-total"><strong>{refill.total_amount:.2f} €</strong></h5></div>
-                    </div>
-                </div>
-                
-                <hr>
-                
-                <div class="mt-4">
-                    <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save"></i> Änderungen speichern
-                    </button>
-                    <a href="{url_for('refills.view_refill', refill_id=refill_id)}" class="btn btn-secondary ms-2">
-                        <i class="bi bi-x"></i> Abbrechen
-                    </a>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <script>
-    // Item-Zähler für neue Elemente
-    let itemCount = {item_count};
-    </script>
-    '''
-    
-    # Use modern template
-    from app.web.dashboard_modern import render_modern_template
-    
-    full_content = extra_css + content + extra_scripts
-    
-    return render_modern_template(
-        content=full_content,
-        title=f'Nachfüllung #{refill_id} bearbeiten',
-        active_module='inventory',
-        active_submodule='refills',
-        breadcrumb=[
-            {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
-            {'text': 'Warenwirtschaft', 'url': url_for('dashboard_modern.inventory')},
-            {'text': 'Nachfüllungen', 'url': url_for('refills.index')},
-            {'text': f'Bearbeiten #{refill_id}'}
-        ]
-    )
-
-
-@refills_bp.route('/delete/<int:refill_id>', methods=['POST'])
-@login_required
-def delete_refill(refill_id):
-    """Nachfüllung löschen"""
-    try:
-        refill = Refill.query.filter_by(id=refill_id, user_id=current_user.id).first_or_404()
-        
-        # Speichere Datum für die Erfolgsmeldung
-        refill_date = refill.date.strftime('%d.%m.%Y')
-        
-        # Lösche zuerst alle zugehörigen RefillItems
-        RefillItem.query.filter_by(refill_id=refill_id).delete()
-        
-        # Lösche zugehörige InventoryMovements wenn vorhanden
-        try:
-            from app.models import InventoryMovement
-            InventoryMovement.query.filter(
-                InventoryMovement.refill_item_id.in_(
-                    db.session.query(RefillItem.id).filter_by(refill_id=refill_id)
-                )
-            ).delete(synchronize_session=False)
-        except:
-            pass  # Falls InventoryMovement nicht existiert
-        
-        # Lösche die zugehörige Ausgabe falls vorhanden
-        if hasattr(refill, 'expense_id') and refill.expense_id:
-            expense = Expense.query.get(refill.expense_id)
-            if expense:
-                db.session.delete(expense)
-        
-        # Lösche die Nachfüllung selbst
-        db.session.delete(refill)
-        db.session.commit()
-        
-        flash(f'Nachfüllung vom {refill_date} wurde erfolgreich gelöscht.', 'success')
-        
-    except Exception as e:
-        db.session.rollback()
-        flash(f'Fehler beim Löschen: {str(e)}', 'danger')
-        import traceback
-        print(traceback.format_exc())
-    
-    return redirect(url_for('refills.index'))
 
 
 @refills_bp.route('/add', methods=['POST'])
@@ -987,6 +906,7 @@ def add_refill():
         # Eindeutige Rechnungsnummer generieren falls leer
         invoice_number = request.form.get('invoice_number')
         if not invoice_number or invoice_number.strip() == '':
+            from datetime import datetime
             import random
             import string
             # Format: REF-YYYYMMDD-XXXXX (z.B. REF-20250816-A3B7K)
@@ -1118,6 +1038,127 @@ def add_refill():
         print(traceback.format_exc())
 
     return redirect(url_for('refills.index'))
+
+
+@refills_bp.route('/test-add', methods=['GET', 'POST'])
+@login_required
+def test_add_refill():
+    """Test-Route für Nachfüllung - Vollständiges Formular ohne Modal"""
+    if request.method == 'POST':
+        try:
+            from datetime import datetime
+            from app.models import ExpenseCategory
+            
+            # Get form data
+            product_id = request.form.get('product_id')
+            quantity = request.form.get('quantity', '1')
+            unit_price = request.form.get('unit_price', '10')
+            
+            # Create refill
+            refill = Refill(
+                date=date.today(),
+                invoice_number=f"TEST-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                supplier_id=request.form.get('supplier_id') or None,
+                device_id=request.form.get('device_id') or None,
+                subtotal=Decimal(unit_price),
+                tax_amount=Decimal(unit_price) * Decimal('0.2'),
+                total_amount=Decimal(unit_price) * Decimal('1.2'),
+                tax_rate=Decimal('20'),
+                prices_include_tax=True,
+                user_id=current_user.id
+            )
+            db.session.add(refill)
+            db.session.flush()
+            
+            # Add item if product selected
+            if product_id:
+                item = RefillItem(
+                    refill_id=refill.id,
+                    product_id=int(product_id),
+                    quantity=Decimal(quantity),
+                    unit_price=Decimal(unit_price),
+                    total_price=Decimal(quantity) * Decimal(unit_price)
+                )
+                db.session.add(item)
+            
+            db.session.commit()
+            flash(f'Test-Nachfüllung #{refill.id} erfolgreich erstellt!', 'success')
+            return redirect(url_for('refills.index'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Fehler: {str(e)}', 'danger')
+            import traceback
+            print(traceback.format_exc())
+    
+    # GET - Show simple form
+    products = Product.query.filter_by(user_id=current_user.id).all()
+    suppliers = Supplier.query.filter_by(user_id=current_user.id).all()
+    devices = Device.query.filter_by(owner_id=current_user.id).all()
+    
+    html = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+    <div class="container" style="padding: 50px;">
+        <h2>Test-Nachfüllung (Einfaches Formular)</h2>
+        <form method="POST">
+            <div class="mb-3">
+                <label>Lieferant:</label>
+                <select name="supplier_id" class="form-control">
+                    <option value="">-- Kein Lieferant --</option>
+    '''
+    
+    for supplier in suppliers:
+        html += f'<option value="{supplier.id}">{supplier.name}</option>'
+    
+    html += '''
+                </select>
+            </div>
+            <div class="mb-3">
+                <label>Gerät:</label>
+                <select name="device_id" class="form-control">
+                    <option value="">-- Kein Gerät --</option>
+    '''
+    
+    for device in devices:
+        html += f'<option value="{device.id}">{device.name}</option>'
+    
+    html += '''
+                </select>
+            </div>
+            <div class="mb-3">
+                <label>Produkt:</label>
+                <select name="product_id" class="form-control">
+                    <option value="">-- Kein Produkt --</option>
+    '''
+    
+    for product in products:
+        html += f'<option value="{product.id}">{product.name}</option>'
+    
+    html += '''
+                </select>
+            </div>
+            <div class="mb-3">
+                <label>Menge:</label>
+                <input type="number" name="quantity" class="form-control" value="1" step="0.001">
+            </div>
+            <div class="mb-3">
+                <label>Stückpreis:</label>
+                <input type="number" name="unit_price" class="form-control" value="10.00" step="0.01">
+            </div>
+            <button type="submit" class="btn btn-primary">Test-Nachfüllung anlegen</button>
+            <a href="/refills/" class="btn btn-secondary">Zurück</a>
+        </form>
+    </div>
+    </body>
+    </html>
+    '''
+    
+    return html
 
 
 @refills_bp.route('/view/<int:refill_id>')

@@ -19,7 +19,7 @@ def create_app(config='development'):
 
     # Template-Ordner richtig setzen
     template_dir = os.path.abspath(os.path.dirname(__file__) + '/../templates')
-    static_dir = os.path.abspath(os.path.dirname(__file__) + '/../static')
+    static_dir = os.path.abspath(os.path.dirname(__file__) + '/static')
 
     app = Flask(__name__,
                 template_folder=template_dir,
@@ -59,6 +59,14 @@ def create_app(config='development'):
     except ImportError as e:
         print(f"⚠️ Expenses Blueprint not found: {e}")
 
+    # Inventory Blueprint registrieren
+    try:
+        from app.web.inventory import inventory_bp
+        app.register_blueprint(inventory_bp)
+        print("✅ Inventory Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Inventory Blueprint not found: {e}")
+
     # Refills Blueprint registrieren
     try:
         from app.web.refills import refills_bp
@@ -83,6 +91,46 @@ def create_app(config='development'):
     except ImportError as e:
         print(f"⚠️ Supplier Blueprint not found: {e}")
 
+    # Reports Blueprint registrieren
+    try:
+        from app.web.reports import reports_bp
+        app.register_blueprint(reports_bp)
+        print("✅ Reports Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Reports Blueprint not found: {e}")
+
+    # Automations Blueprint
+    try:
+        from app.web.automations import automations_bp
+        app.register_blueprint(automations_bp)
+        print("✅ Automations Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Automations Blueprint not found: {e}")
+
+    # Settings Blueprint registrieren
+    try:
+        from app.web.settings import settings_bp
+        app.register_blueprint(settings_bp)
+        print("✅ Settings Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Settings Blueprint not found: {e}")
+
+    # Device Extensions Blueprint registrieren
+    try:
+        from app.web.device_extensions import device_ext_bp
+        app.register_blueprint(device_ext_bp)
+        print("✅ Device Extensions Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Device Extensions Blueprint not found: {e}")
+
+    # Income Blueprint registrieren
+    try:
+        from app.web.income import income_bp
+        app.register_blueprint(income_bp)
+        print("✅ Income Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Income Blueprint not found: {e}")
+
     # Device Blueprint registrieren
     try:
         from app.web.devices import devices_bp
@@ -99,6 +147,14 @@ def create_app(config='development'):
     except ImportError as e:
         print(f"⚠️ Users Blueprint not found: {e}")
 
+    # Modern Dashboard Blueprint registrieren
+    try:
+        from app.web.dashboard_modern import dashboard_modern_bp
+        app.register_blueprint(dashboard_modern_bp, url_prefix='/modern')
+        print("✅ Modern Dashboard registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ Modern Dashboard not found: {e}")
+
     # Models und Datenbank-Setup - NACH Blueprint-Registrierung
     with app.app_context():
         # Models werden HIER importiert (nicht oben!)
@@ -112,6 +168,32 @@ def create_app(config='development'):
 
     # Standard Routes (für Tests)
     register_default_routes(app)
+
+    # PWA API Blueprint registrieren
+    try:
+        from app.api.pwa import pwa_bp
+        app.register_blueprint(pwa_bp)
+        print("✅ PWA API Blueprint registered successfully!")
+    except ImportError as e:
+        print(f"⚠️ PWA API Blueprint not found: {e}")
+
+    # Static files mit Service Worker
+    @app.route('/sw.js')
+    def service_worker():
+        from flask import send_from_directory
+        return send_from_directory('static', 'sw.js', mimetype='application/javascript')
+
+    # Manifest
+    @app.route('/manifest.json')
+    def manifest():
+        from flask import send_from_directory
+        return send_from_directory('static', 'manifest.json', mimetype='application/json')
+
+    # Offline page
+    @app.route('/offline.html')
+    def offline():
+        from flask import send_from_directory
+        return send_from_directory('static', 'offline.html')
 
     return app
 

@@ -558,6 +558,23 @@ class Expense(TimestampMixin, UUIDMixin, db.Model):
 # WEITERE MODELS
 # ============================================================================
 
+class MaintenanceRecord(TimestampMixin, db.Model):
+    """Wartungsaufzeichnungen für Geräte"""
+    __tablename__ = 'maintenance_records'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    device_id = db.Column(db.Integer, db.ForeignKey('devices.id'), nullable=False)
+    date = db.Column(db.Date, nullable=False)
+    maintenance_type = db.Column(db.String(50))  # routine, repair, cleaning, inspection, upgrade
+    technician = db.Column(db.String(100))
+    cost = db.Column(db.Numeric(10, 2), default=0)
+    notes = db.Column(db.Text)
+    next_maintenance = db.Column(db.Date)
+    
+    # Relationships
+    device = db.relationship('Device', backref='maintenance_records')
+
+
 class MaintenanceLog(TimestampMixin, db.Model):
     """Wartungsprotokoll"""
     __tablename__ = 'maintenance_logs'

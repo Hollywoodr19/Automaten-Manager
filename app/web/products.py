@@ -9,9 +9,9 @@ from datetime import datetime
 from decimal import Decimal
 from app import db
 from app.models import Product, ProductUnit, ProductCategory, InventoryMovement
-from app.web.navigation import render_with_base_new as render_with_base
-
 products_bp = Blueprint('products', __name__, url_prefix='/products')
+
+# Import render_modern_template am Ende der Datei
 
 
 @products_bp.route('/')
@@ -324,14 +324,21 @@ def index():
     </style>
     """
 
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='products',
-            title='Produkte - Automaten Manager',
-            extra_scripts=extra_scripts,
-            extra_css=extra_css
-        )
+    from app.web.dashboard_modern import render_modern_template
+    
+    # Kombiniere Content, Scripts und CSS
+    full_content = extra_css + content + extra_scripts
+    
+    return render_modern_template(
+        content=full_content,
+        title='Produkte',
+        active_module='inventory',
+        active_submodule='products',
+        breadcrumb=[
+            {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+            {'text': 'Warenwirtschaft', 'url': url_for('dashboard_modern.inventory')},
+            {'text': 'Produkte'}
+        ]
     )
 
 

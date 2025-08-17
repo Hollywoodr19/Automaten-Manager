@@ -10,9 +10,9 @@ from decimal import Decimal
 from sqlalchemy import func, desc
 from app import db
 from app.models import Supplier, Refill, RefillItem, Product
-from app.web.navigation import render_with_base_new as render_with_base
-
 suppliers_bp = Blueprint('suppliers', __name__, url_prefix='/suppliers')
+
+# Import render_modern_template am Ende der Datei
 
 
 @suppliers_bp.route('/')
@@ -369,14 +369,21 @@ def index():
     </div>
     """
 
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='suppliers',
-            title='Lieferanten - Automaten Manager',
-            extra_scripts=extra_scripts,
-            extra_css=extra_css
-        )
+    from app.web.dashboard_modern import render_modern_template
+    
+    # Kombiniere Content, Scripts und CSS
+    full_content = extra_css + content + extra_scripts
+    
+    return render_modern_template(
+        content=full_content,
+        title='Lieferanten',
+        active_module='inventory',
+        active_submodule='suppliers',
+        breadcrumb=[
+            {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+            {'text': 'Warenwirtschaft', 'url': url_for('dashboard_modern.inventory')},
+            {'text': 'Lieferanten'}
+        ]
     )
 
 
@@ -538,10 +545,17 @@ def supplier_details(supplier_id):
     </div>
     """
 
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='suppliers',
-            title=f'{supplier.name} - Lieferanten'
-        )
+    from app.web.dashboard_modern import render_modern_template
+    
+    return render_modern_template(
+        content=content,
+        title=f'{supplier.name} - Details',
+        active_module='inventory',
+        active_submodule='suppliers',
+        breadcrumb=[
+            {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+            {'text': 'Warenwirtschaft', 'url': url_for('dashboard_modern.inventory')},
+            {'text': 'Lieferanten', 'url': url_for('suppliers.index')},
+            {'text': supplier.name}
+        ]
     )

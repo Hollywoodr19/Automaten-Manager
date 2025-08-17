@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal
 from app import db
 from app.models import Device, Expense, ExpenseCategory
-from app.web.navigation import render_with_base_new as render_with_base
+# Import erfolgt in den Funktionen
 import json
 import os
 import uuid
@@ -751,14 +751,21 @@ def index():
     </button>
     """
 
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='expenses',
-            title='Ausgaben - Automaten Manager',
-            extra_scripts=extra_scripts,
-            extra_css=extra_css
-        )
+    # Use modern template
+    from app.web.dashboard_modern import render_modern_template
+    
+    breadcrumb = [
+        {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+        {'text': 'Ausgaben'}
+    ]
+    
+    full_content = extra_css + content + extra_scripts
+    
+    return render_modern_template(
+        full_content,
+        title="Ausgabenverwaltung",
+        active_module='expenses',
+        breadcrumb=breadcrumb
     )
 
 

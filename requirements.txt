@@ -40,4 +40,12 @@ click==8.1.7
 eventlet==0.33.3
 gunicorn==21.2.0
 
+Flask-Mail==0.9.1
+
+# Reports & Export
+reportlab==4.0.7
+openpyxl==3.1.2
+xlsxwriter==3.1.9
+Pillow==10.1.0
+
 prometheus-flask-exporter==0.23.2

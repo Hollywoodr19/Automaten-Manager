@@ -15,7 +15,7 @@ import csv
 import io
 from app import db
 from app.models import User, LoginLog, AuditLog, AuditAction
-from app.web.navigation import render_with_base_new as render_with_base
+# Import wird später in den Funktionen gemacht, um zirkuläre Imports zu vermeiden
 from functools import wraps
 from sqlalchemy import or_, and_
 
@@ -1015,8 +1015,23 @@ def index():
     </script>
     '''
 
-    return render_template_string(
-        render_with_base(content, title='Benutzerverwaltung', active_page='users', extra_scripts=extra_scripts)
+    # Use modern template
+    from app.web.dashboard_modern import render_modern_template
+    
+    breadcrumb = [
+        {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+        {'text': 'Einstellungen', 'url': url_for('dashboard_modern.settings')},
+        {'text': 'Benutzer'}
+    ]
+    
+    full_content = content + extra_scripts
+    
+    return render_modern_template(
+        full_content,
+        title="Benutzerverwaltung",
+        active_module='settings',
+        active_submodule='users',
+        breadcrumb=breadcrumb
     )
 
 
@@ -1330,8 +1345,21 @@ def profile():
     </script>
     '''
 
-    return render_template_string(
-        render_with_base(content, title='Mein Profil', active_page='profile', extra_scripts=extra_scripts)
+    # Use modern template
+    from app.web.dashboard_modern import render_modern_template
+    
+    breadcrumb = [
+        {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+        {'text': 'Profil'}
+    ]
+    
+    full_content = content + extra_scripts
+    
+    return render_modern_template(
+        full_content,
+        title="Mein Profil",
+        active_module='dashboard',
+        breadcrumb=breadcrumb
     )
 
 
@@ -1666,8 +1694,22 @@ def user_activity(user_id):
     </div>
     '''
 
-    return render_template_string(
-        render_with_base(content, title=f'Aktivitäten - {user.username}', active_page='users')
+    # Use modern template
+    from app.web.dashboard_modern import render_modern_template
+    
+    breadcrumb = [
+        {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+        {'text': 'Einstellungen', 'url': url_for('dashboard_modern.settings')},
+        {'text': 'Benutzer', 'url': url_for('users.index')},
+        {'text': f'Aktivitäten - {user.username}'}
+    ]
+    
+    return render_modern_template(
+        content,
+        title=f"Aktivitäten - {user.username}",
+        active_module='settings',
+        active_submodule='users',
+        breadcrumb=breadcrumb
     )
 
 

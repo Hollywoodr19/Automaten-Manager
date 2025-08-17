@@ -9,7 +9,6 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal
 from app import db
 from app.models import Device, DeviceType, DeviceStatus, Product, Entry, Expense
-from app.web.navigation import render_with_base_new as render_with_base
 import json
 import secrets
 import string
@@ -832,14 +831,26 @@ def index():
     </div>
     """
 
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='devices',
-            title='Geräte - Automaten Manager',
-            extra_scripts=extra_scripts,
-            extra_css=extra_css
-        )
+    # Use modern template with breadcrumb
+    from app.web.dashboard_modern import render_modern_template
+    
+    breadcrumb = [
+        {'text': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+        {'text': 'Geräte'}
+    ]
+    
+    # Combine content with scripts and styles
+    full_content = f'''
+    {extra_css}
+    {content}
+    {extra_scripts}
+    '''
+    
+    return render_modern_template(
+        full_content, 
+        title="Geräteverwaltung",
+        active_module='devices',
+        breadcrumb=breadcrumb
     )
 
 @devices_bp.route('/generate-name')
@@ -863,10 +874,15 @@ def generate_serial():
     return jsonify({'success': True, 'serial': serial})
 
 
-@devices_bp.route('/add', methods=['POST'])
+@devices_bp.route('/add', methods=['GET', 'POST'])
 @login_required
 def add_device():
     """Gerät hinzufügen"""
+    # Bei GET-Request: Zeige das Formular
+    if request.method == 'GET':
+        return redirect(url_for('devices.index'))  # Redirect zur Hauptseite mit Modal
+    
+    # Bei POST-Request: Verarbeite das Formular
     try:
         # Auto-generate serial number if empty
         serial_number = request.form.get('serial_number')

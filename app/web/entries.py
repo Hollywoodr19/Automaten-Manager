@@ -12,8 +12,7 @@ from app import db
 from app.models import Device, Entry, DeviceStatus
 import json
 
-# NEU: Import der zentralen Navigation
-from app.web.navigation import render_with_base_new as render_with_base
+# Import erfolgt in den Funktionen, um zirkuläre Imports zu vermeiden
 
 entries_bp = Blueprint('entries', __name__, url_prefix='/entries')
 
@@ -558,15 +557,21 @@ def index():
     </div>
     """
 
-    # VERWENDE DIE ZENTRALE NAVIGATION!
-    return render_template_string(
-        render_with_base(
-            content,
-            active_page='entries',  # Markiert "Einnahmen" als aktiv
-            title='Einnahmen - Automaten Manager',
-            extra_css=extra_css,
-            extra_scripts=extra_scripts
-        )
+    # Use modern template
+    from app.web.dashboard_modern import render_modern_template
+    
+    return render_modern_template(
+        content_html=content,
+        title="Einnahmen erfassen",
+        module='income',
+        submodule='weekly',
+        breadcrumb=[
+            {'name': 'Dashboard', 'url': url_for('dashboard_modern.dashboard')},
+            {'name': 'Einnahmen', 'url': url_for('income.index')},
+            {'name': 'Wochenerfassung', 'url': None}
+        ],
+        extra_scripts=extra_scripts,
+        extra_css=extra_css
     )
 
 
