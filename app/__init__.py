@@ -26,8 +26,17 @@ def create_app(config='development'):
                 static_folder=static_dir)
 
     # Konfiguration
-    app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:password@postgres:5432/automaten'
+    import os
+    
+    # Datenbank-URL aus Umgebungsvariable oder Default
+    db_password = os.environ.get('DB_PASSWORD', 'password123')
+    db_host = os.environ.get('DB_HOST', 'postgres')
+    db_port = os.environ.get('DB_PORT', '5432')  # Intern bleibt 5432!
+    db_name = os.environ.get('DB_NAME', 'automaten')
+    db_user = os.environ.get('DB_USER', 'postgres')
+    
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
     # Extensions mit App verbinden

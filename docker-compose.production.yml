@@ -4,19 +4,19 @@ services:
     container_name: automaten_app
     restart: always
     ports:
-      - "5000:5000"
+      - "8585:5000"
     environment:
       - FLASK_ENV=production
-      - DATABASE_URL=postgresql://postgres:${DB_PASSWORD:-SecurePassword123}@postgres:5432/automaten
+      - DB_PASSWORD=password123
+      - DB_HOST=postgres
+      - DB_PORT=5433
+      - DB_NAME=automaten
+      - DB_USER=postgres
+      - SECRET_KEY=7f4a8d9b2c6e11a5f73d8b4e7c2a9f5b8d64e3c7a1f9d4b8e2c6a5f3d1b7e9c4a2f
       - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
     volumes:
       - ./app:/app/app
-      - ./config:/app/config
-      - ./scripts:/app/scripts
       - ./run.py:/app/run.py
-      - app_uploads:/app/uploads
-      - app_backups:/app/backups
     depends_on:
       - postgres
       - redis
@@ -30,9 +30,9 @@ services:
     environment:
       - POSTGRES_DB=automaten
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-SecurePassword123}
+      - POSTGRES_PASSWORD=password123
     ports:
-      - "5432:5432"
+      - "5433"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups/postgres:/backups
@@ -50,22 +50,6 @@ services:
     networks:
       - automaten_network
 
-  # Optional: Nginx Reverse Proxy
-  nginx:
-    image: nginx:alpine
-    container_name: automaten_nginx
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/ssl:/etc/nginx/ssl
-      - nginx_logs:/var/log/nginx
-    depends_on:
-      - app
-    networks:
-      - automaten_network
 
 volumes:
   postgres_data:
@@ -76,8 +60,7 @@ volumes:
     driver: local
   app_backups:
     driver: local
-  nginx_logs:
-    driver: local
+
 
 networks:
   automaten_network:
